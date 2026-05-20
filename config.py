@@ -3,16 +3,16 @@ import os
 BOT_TOKEN = os.environ.get("bot_token")
 TELEGRAM_API = f"https://api.telegram.org/bot{BOT_TOKEN}"
 POOL_API = "https://sr-pool-api-5bm.pages.dev"
-USER_MODEL = "gemini-2.0-flash-exp"
-ADMIN_MODEL = "gemini-2.0-flash-exp"
+USER_MODEL = "gemini-flash-latest"
+ADMIN_MODEL = "gemini-flash-latest"
 ADMINS = [7026190306, 6280547580]
 MICROSOFT_TTS_API = "https://multi-functional-api-sujan.vercel.app/tts/Microsoft"
 DEFAULT_TTS_VOICE = "en-US-AriaNeural"
 REDIS_URL = os.environ.get("REDIS_URL", "")
 BOT_USERNAME = os.environ.get("BOT_USERNAME", "meroaiassistantbot_bot")
 BOT_MENTION_ALIASES = [a.strip() for a in os.environ.get("BOT_MENTION_ALIASES", "").split(",") if a.strip()]
-MAX_HISTORY = 30
-CONTEXT_SIZE = 30
+MAX_HISTORY = 1000
+CONTEXT_SIZE = 50
 
 SHARE_TEXT = "🚀 Check out Daily AI Companion — your free, fast & powerful AI companion on Telegram!\n\nhttps://t.me/meroaiassistantbot_bot"
 
