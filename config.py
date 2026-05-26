@@ -3,8 +3,8 @@ import os
 BOT_TOKEN = os.environ.get("bot_token")
 TELEGRAM_API = f"https://api.telegram.org/bot{BOT_TOKEN}"
 POOL_API = "https://sr-pool-api-5bm.pages.dev"
-USER_MODEL = "gemini-3.5-flash"
-ADMIN_MODEL = "gemini-3.5-flash"
+USER_MODEL = "gemini-3-flash-preview"
+ADMIN_MODEL = "gemini-3-flash-preview"
 ADMINS = [7026190306, 6280547580]
 MICROSOFT_TTS_API = "https://multi-functional-api-sujan.vercel.app/tts/Microsoft"
 DEFAULT_TTS_VOICE = "en-US-AriaNeural"
