@@ -32,7 +32,6 @@ from settings import (
 from markdown_parse import escape_html
 from api import handle_gemini
 from system import get_system_text
-from agent import agent_route, execute_normal_message
 from image_generation import execute_image
 from voice_message import handle_voice
 from transcriber import transcribe_from_telegram_message
@@ -338,7 +337,14 @@ async def webhook(request: Request):
                     await answer_callback(cb_id)
                     ensure_user(cid, name)
                     await send_chat_action(cid, "typing")
-                    await agent_route(cid, TEMPLATE_PROMPTS[idx], name)
+                    prompt_text = TEMPLATE_PROMPTS[idx]
+                    save_message(cid, "user", prompt_text)
+                    await handle_gemini(
+                        cid,
+                        [{"text": prompt_text}],
+                        get_system_text(name, cid),
+                        user_name=name,
+                    )
                 return JSONResponse({"ok": True})
 
             if cb_data == "describe_photo":
@@ -369,19 +375,7 @@ async def webhook(request: Request):
                 await edit_message(cid, mid, "✅ Attachment cancelled.")
                 return JSONResponse({"ok": True})
 
-            if cb_data == "history":
-                await answer_callback(cb_id)
-                history = get_all_history(cid)
-                if not history:
-                    await send_message(cid, "📜 No conversation history found.")
-                else:
-                    text_parts = [f"📜 <b>History ({len(history)} messages):</b>\n"]
-                    for msg in history[-20:]:
-                        label = "👤 You" if msg["role"] == "user" else "🤖 Daily AI Companion"
-                        t = msg.get("text", "")[:500]
-                        text_parts.append(f"<b>{label}:</b>\n{escape_html(t)}\n")
-                    await send_message(cid, "\n".join(text_parts), parse_mode="HTML")
-                return JSONResponse({"ok": True})
+
 
             if cb_data == "export_chat":
                 await answer_callback(cb_id)
@@ -1025,19 +1019,7 @@ async def webhook(request: Request):
             )
             return JSONResponse({"ok": True})
 
-        if text == "/history":
-            ensure_user(cid, name)
-            history = get_all_history(cid)
-            if not history:
-                await send_message(cid, "📜 No conversation history.")
-                return JSONResponse({"ok": True})
-            text_parts = [f"📜 <b>History ({len(history)} messages):</b>\n"]
-            for msg in history[-20:]:
-                label = "👤 You" if msg["role"] == "user" else "🤖 Daily AI Companion"
-                t = msg.get("text", "")[:500]
-                text_parts.append(f"<b>{label}:</b>\n{escape_html(t)}\n")
-            await send_message(cid, "\n".join(text_parts), parse_mode="HTML")
-            return JSONResponse({"ok": True})
+
 
         if text == "/total":
             if not is_admin(cid):
@@ -1150,7 +1132,6 @@ async def webhook(request: Request):
                     "/memory list — View saved memories\n"
                     "/memory clear — Clear saved memories\n"
                     "/cls — Clear stored attachment\n"
-                    "/history — View recent chat history\n"
                     "/clear_system — Remove custom system instructions\n"
                     "/tools — Open productivity tools\n/help — Show admin help\n"
                 )
@@ -1165,7 +1146,6 @@ async def webhook(request: Request):
                     "/memory list — View saved memories\n"
                     "/memory clear — Clear saved memories\n"
                     "/cls — Clear stored attachment\n"
-                    "/history — View recent chat history\n"
                     "/feedback — Send feedback (text, voice, or attachments)\n"
                     "/clear_system — Remove custom system instructions\n"
                     "/tools — Open productivity tools\n/help — Show this help\n\n"
@@ -1209,7 +1189,21 @@ async def webhook(request: Request):
 
         ensure_user(cid, name)
         await send_chat_action(cid, "typing")
-        await agent_route(cid, text.strip(), name)
+        prompt_text = text.strip()
+        save_message(cid, "user", prompt_text)
+        current_parts = [{"text": prompt_text}]
+        file_data = get_file_data(cid)
+        has_file = False
+        if file_data and file_data.get("base64"):
+            current_parts.append({"inlineData": {"mimeType": file_data["mime_type"], "data": file_data["base64"]}})
+            has_file = True
+        await handle_gemini(
+            cid,
+            current_parts,
+            get_system_text(name, cid),
+            use_tools=not has_file,
+            user_name=name,
+        )
         return JSONResponse({"ok": True})
 
     except Exception:
