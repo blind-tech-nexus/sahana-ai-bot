@@ -179,12 +179,8 @@ async def try_api_call(
                 rotator.mark_success(key)
                 return resp.text, None
 
-            if _is_retryable_status(resp.status_code):
-                rotator.mark_failed(key, f"status_{resp.status_code}")
-                continue
-
-            # Non-retryable (e.g. 400 bad request) — still try other keys
             rotator.mark_failed(key, f"status_{resp.status_code}")
+            continue
 
     return None, rotator.get_failure_summary()
 

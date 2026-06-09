@@ -5,7 +5,7 @@ from typing import Optional
 
 import httpx
 
-from api import extract_ai_text, _is_retryable_status
+from api import extract_ai_text
 from api_keys import fetch_api_keys, KeyRotator
 from config import USER_MODEL
 
@@ -92,11 +92,7 @@ async def transcribe_audio_inline(
                     return None, "Empty transcription result"
                 return clean, None
 
-            if _is_retryable_status(resp.status_code):
-                rotator.mark_failed(key, f"status_{resp.status_code}")
-                continue
-
-            # Non-retryable — still try other keys
             rotator.mark_failed(key, f"status_{resp.status_code}")
+            continue
 
     return None, f"Transcription failed: {rotator.get_failure_summary()}"
