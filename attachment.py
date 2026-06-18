@@ -1,7 +1,7 @@
 import base64
 from database import save_message, save_file_data, set_state, ensure_user
 from message import send_message, send_chat_action, download_telegram_file, get_telegram_file_info
-from upload import detect_mime_type, get_display_name
+from upload import detect_mime_type, get_display_name, is_gemini_supported_mime
 from api import handle_gemini
 from system import get_system_text
 from settings import photo_keyboard, file_prompt_keyboard
@@ -25,6 +25,19 @@ async def _store_and_prompt(cid: int, file_name: str, mime: str, file_bytes: byt
 
 
 async def _process_non_image(cid: int, name: str, file_name: str, mime: str, file_bytes: bytes, caption: str, tag: str, upload_label: str) -> None:
+    if not is_gemini_supported_mime(mime):
+        ext = file_name.rsplit('.', 1)[-1].lower() if '.' in file_name else ''
+        from config import CODE_EXTENSIONS
+        if ext in CODE_EXTENSIONS:
+            mime = "text/plain"
+        else:
+            await send_message(
+                cid,
+                f"⚠️ <b>Unsupported File Type</b>\n\nThe file <code>{escape_html(file_name)}</code> ({mime}) is not directly supported by Gemini.\n\nPlease convert it to <b>PDF</b> or <b>TXT</b>, or copy-paste its text content directly.",
+                parse_mode="HTML"
+            )
+            return
+
     if caption:
         save_message(cid, 'user', f'[{tag}: {file_name}] {caption}')
         parts: list = [{'text': caption}, _inline_part(mime, file_bytes)]

@@ -1,5 +1,6 @@
 import httpx
 import logging
+import time
 from typing import Optional
 from config import POOL_API
 
@@ -8,11 +9,19 @@ logger = logging.getLogger("mero.api_keys")
 # Global variables to store API keys and their statuses across request cycles
 api_keys: list[str] = []
 key_status: dict[str, str] = {}  # key -> "unused" | "success" | "failed"
+LAST_FETCH_TIME: float = 0
+CACHE_TTL = 300  # 5 minutes cache
 
 
 async def fetch_api_keys() -> bool:
-    """Fetch API keys from the pool API and update the global tracker."""
-    global api_keys, key_status
+    """Fetch API keys from the pool API and update the global tracker with caching."""
+    global api_keys, key_status, LAST_FETCH_TIME
+    current_time = time.time()
+
+    # Return cached keys if available and fresh
+    if api_keys and (current_time - LAST_FETCH_TIME) < CACHE_TTL:
+        return True
+
     try:
         async with httpx.AsyncClient(timeout=30.0) as client:
             resp = await client.get(POOL_API)
@@ -21,6 +30,7 @@ async def fetch_api_keys() -> bool:
                 if isinstance(keys, list) and keys:
                     new_keys = [k for k in keys if k and isinstance(k, str)]
                     api_keys = new_keys
+                    LAST_FETCH_TIME = current_time
 
                     # Sync global status dictionary
                     updated_status = {}
@@ -38,6 +48,8 @@ async def fetch_api_keys() -> bool:
                     return bool(api_keys)
     except Exception as exc:
         logger.warning("fetch_api_keys failed: %s", exc)
+
+    # Fallback to existing keys if fetch failed
     return bool(api_keys)
 
 
@@ -56,6 +68,11 @@ class KeyRotator:
     def __init__(self, preferred_key: Optional[str] = None):
         # Ensure status dictionary has all current keys initialized
         all_keys = list(get_keys())
+
+        # If all keys are failed, reset them to unused to avoid lockout
+        if all_keys and all(key_status.get(k) == "failed" for k in all_keys):
+            for k in all_keys:
+                key_status[k] = "unused"
 
         # Group keys by their global status
         success_keys = [k for k in all_keys if key_status.get(k) == "success"]

@@ -89,6 +89,24 @@ def _is_retryable_status(status_code: int) -> bool:
     return status_code in (429, 403, 500, 502, 503, 504)
 
 
+GEMINI_SUPPORTED_MIMES = {
+    "image/jpeg", "image/png", "image/webp", "image/heic", "image/heif", "image/gif",
+    "audio/wav", "audio/mp3", "audio/mpeg", "audio/ogg", "audio/opus", "audio/flac", "audio/aac", "audio/webm", "audio/x-wav", "audio/m4a", "audio/x-m4a",
+    "video/mp4", "video/webm", "video/quicktime", "video/x-matroska", "video/x-msvideo", "video/3gpp",
+    "application/pdf",
+    "text/plain", "text/html", "text/css", "text/javascript", "text/csv", "text/xml", "application/json", "application/xml", "text/markdown",
+}
+
+
+def normalize_mime_type(mime: str) -> str:
+    mime = (mime or "").strip().lower()
+    if mime in GEMINI_SUPPORTED_MIMES:
+        return mime
+    if mime.startswith("text/") or "javascript" in mime or "json" in mime or "xml" in mime:
+        return "text/plain"
+    return "text/plain"
+
+
 def _normalize_part_keys(part: dict) -> dict:
     def _compact(data: dict) -> dict:
         return {k: v for k, v in data.items() if v not in ("", None)}
@@ -96,33 +114,34 @@ def _normalize_part_keys(part: dict) -> dict:
     if "file_data" in part and isinstance(part["file_data"], dict):
         fd = part["file_data"]
         normalized = _compact({
-            "mime_type": fd.get("mime_type") or fd.get("mimeType"),
+            "mime_type": normalize_mime_type(fd.get("mime_type") or fd.get("mimeType")),
             "file_uri": fd.get("file_uri") or fd.get("fileUri"),
         })
         return {"file_data": normalized} if normalized else {}
     if "fileData" in part and isinstance(part["fileData"], dict):
         fd = part["fileData"]
         normalized = _compact({
-            "mime_type": fd.get("mimeType"),
+            "mime_type": normalize_mime_type(fd.get("mimeType")),
             "file_uri": fd.get("fileUri"),
         })
         return {"file_data": normalized} if normalized else {}
     if "inline_data" in part and isinstance(part["inline_data"], dict):
         ind = part["inline_data"]
         normalized = _compact({
-            "mime_type": ind.get("mime_type") or ind.get("mimeType"),
+            "mime_type": normalize_mime_type(ind.get("mime_type") or ind.get("mimeType")),
             "data": ind.get("data"),
         })
         return {"inline_data": normalized} if normalized else {}
     if "inlineData" in part and isinstance(part["inlineData"], dict):
         ind = part["inlineData"]
         normalized = _compact({
-            "mime_type": ind.get("mimeType"),
+            "mime_type": normalize_mime_type(ind.get("mimeType")),
             "data": ind.get("data"),
         })
         return {"inline_data": normalized} if normalized else {}
     if "text" in part:
-        return {"text": part.get("text", "")}
+        text_val = (part.get("text") or "").strip()
+        return {"text": text_val} if text_val else {}
     return part
 
 
@@ -179,6 +198,7 @@ async def try_api_call(
                 rotator.mark_success(key)
                 return resp.text, None
 
+            logger.warning("API call failed with status %d: %s", resp.status_code, resp.text)
             rotator.mark_failed(key, f"status_{resp.status_code}")
             continue
 
@@ -192,23 +212,54 @@ def build_body(
     use_tools: bool = True,
     use_functions: bool = True,
 ) -> dict:
-    contents = []
+    # Combine history and current_parts into a single list of messages to alternate
+    raw_msgs = []
     for msg in history_messages:
-        contents.append({
-            "role": "user" if msg["role"] == "user" else "model",
-            "parts": [{"text": msg.get("text", "")}],
-        })
-    contents.append({"role": "user", "parts": _normalize_parts(current_parts)})
+        role = "user" if msg.get("role") == "user" else "model"
+        text = (msg.get("text") or "").strip()
+        if text:
+            raw_msgs.append({"role": role, "parts": [{"text": text}]})
+
+    # Append current user parts
+    normalized_current = _normalize_parts(current_parts)
+    if normalized_current:
+        raw_msgs.append({"role": "user", "parts": normalized_current})
+
+    # Merge consecutive roles and filter out empty parts
+    alternating_contents = []
+    for msg in raw_msgs:
+        role = msg["role"]
+        parts = [p for p in msg["parts"] if p]  # filter out empty parts
+        if not parts:
+            continue
+
+        if alternating_contents and alternating_contents[-1]["role"] == role:
+            # Merge parts into the previous message
+            alternating_contents[-1]["parts"].extend(parts)
+        else:
+            alternating_contents.append({"role": role, "parts": parts})
+
+    # Ensure the first message is "user"
+    if alternating_contents and alternating_contents[0]["role"] != "user":
+        alternating_contents.pop(0)
+
+    # If empty, make sure we have at least the current user parts
+    if not alternating_contents:
+        if normalized_current:
+            alternating_contents.append({"role": "user", "parts": normalized_current})
+        else:
+            alternating_contents.append({"role": "user", "parts": [{"text": "Hello"}]})
+
     body: dict = {
         "system_instruction": {"parts": [{"text": system_text}]},
-        "contents": contents,
+        "contents": alternating_contents,
         "generationConfig": {"maxOutputTokens": MAX_OUTPUT_TOKENS, "temperature": 1.0},
     }
+
     if use_tools or use_functions:
         tools: list[dict] = []
         if use_tools:
-            tools.append({"google_search": {}})
-            tools.append({"url_context": {}})
+            tools.append({"google_search_retrieval": {}})
         if use_functions:
             tools.append({"function_declarations": FUNCTION_DECLARATIONS})
         body["tools"] = tools
@@ -250,7 +301,7 @@ def extract_ai_text(content: str) -> tuple[str, list[dict]]:
 def extract_function_calls(content: str) -> list[dict]:
     """Extract function calls from a Gemini response.
 
-    Returns a list of dicts with keys: name, args, id (if present).
+    Returns a list of dicts with keys: name, args.
     """
     try:
         data = json.loads(content)
@@ -267,7 +318,6 @@ def extract_function_calls(content: str) -> list[dict]:
             calls.append({
                 "name": fc.get("name", ""),
                 "args": fc.get("args", {}),
-                "id": fc.get("id", ""),
             })
     return calls
 
@@ -335,8 +385,6 @@ async def _send_function_response(
     fc_parts = []
     for fc in function_calls:
         fc_part: dict = {"functionCall": {"name": fc["name"], "args": fc["args"]}}
-        if fc.get("id"):
-            fc_part["functionCall"]["id"] = fc["id"]
         fc_parts.append(fc_part)
     contents.append({"role": "model", "parts": fc_parts})
 
@@ -350,16 +398,12 @@ async def _send_function_response(
                 "response": result,
             }
         }
-        if fc.get("id"):
-            fr_part["functionResponse"]["id"] = fc["id"]
         fr_parts.append(fr_part)
     contents.append({"role": "user", "parts": fr_parts})
 
     # Build new request body with updated contents
     follow_up = dict(body)
     follow_up["contents"] = contents
-    # Remove function declarations from follow-up to get a text response
-    # Actually keep them in case the model wants to call another function
     follow_up_json = json.dumps(follow_up)
 
     content, err = await try_api_call(follow_up_json, model, preferred_key=preferred_key)

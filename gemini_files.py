@@ -5,7 +5,7 @@ from typing import Optional
 
 import httpx
 
-from api import extract_ai_text
+from api import extract_ai_text, normalize_mime_type
 from api_keys import fetch_api_keys, KeyRotator
 from config import USER_MODEL
 
@@ -31,6 +31,9 @@ async def transcribe_audio_inline(
     """
     if not await fetch_api_keys():
         return None, "No API keys available"
+
+    # Normalize MIME type to ensure Gemini compatibility
+    mime_type = normalize_mime_type(mime_type)
 
     # Base64-encode the audio bytes
     encoded_audio = base64.b64encode(audio_bytes).decode("utf-8")
@@ -92,6 +95,7 @@ async def transcribe_audio_inline(
                     return None, "Empty transcription result"
                 return clean, None
 
+            logger.warning("Transcription API call failed with status %d: %s", resp.status_code, resp.text)
             rotator.mark_failed(key, f"status_{resp.status_code}")
             continue
 

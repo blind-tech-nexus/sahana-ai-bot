@@ -2,6 +2,24 @@ from typing import Optional
 from config import SUPPORTED_MIME_TYPES, CODE_EXTENSIONS
 
 
+GEMINI_SUPPORTED_MIMES = {
+    "image/jpeg", "image/png", "image/webp", "image/heic", "image/heif", "image/gif",
+    "audio/wav", "audio/mp3", "audio/mpeg", "audio/ogg", "audio/opus", "audio/flac", "audio/aac", "audio/webm", "audio/x-wav", "audio/m4a", "audio/x-m4a",
+    "video/mp4", "video/webm", "video/quicktime", "video/x-matroska", "video/x-msvideo", "video/3gpp",
+    "application/pdf",
+    "text/plain", "text/html", "text/css", "text/javascript", "text/csv", "text/xml", "application/json", "application/xml", "text/markdown",
+}
+
+
+def is_gemini_supported_mime(mime: str) -> bool:
+    mime = (mime or "").strip().lower()
+    if mime in GEMINI_SUPPORTED_MIMES:
+        return True
+    if mime.startswith("text/"):
+        return True
+    return False
+
+
 def detect_mime_type(file_path: str, provided_mime: Optional[str] = None) -> str:
     if provided_mime and provided_mime in SUPPORTED_MIME_TYPES:
         return provided_mime
