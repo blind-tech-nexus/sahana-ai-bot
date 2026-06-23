@@ -6,7 +6,7 @@ POOL_API = "https://sr-pool-api-5bm.pages.dev"
 
 # Models
 MODEL_LITE = "gemini-2.5-flash"
-MODEL_SMART = "gemini-3-flash-preview"
+MODEL_SMART = "gemini-2.5-pro"
 DEFAULT_MODEL = "nepo-lite"
 
 ADMINS = [7026190306, 6280547580]

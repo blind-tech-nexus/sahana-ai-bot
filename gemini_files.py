@@ -83,18 +83,14 @@ async def transcribe_audio_inline(
                         "No response received from AI.",
                         "Failed to parse AI response.",
                     ):
-                        return None, "Empty transcription result"
+                        last_error = "Empty transcription result or failed to parse"
+                        continue
                     return clean, None
 
                 logger.warning("Transcription API call failed with status %d: %s", resp.status_code, resp.text)
                 last_error = f"Status {resp.status_code}: {resp.text}"
-                if not is_retriable_error(httpx.HTTPStatusError(message="", request=None, response=resp)):
-                    break
             except Exception as exc:
                 logger.warning("Transcription API call exception: %s", exc)
                 last_error = str(exc)
-                if not is_retriable_error(exc):
-                    break
-                continue
 
     return None, f"Transcription failed: {last_error or 'All keys exhausted'}"

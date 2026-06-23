@@ -192,14 +192,9 @@ async def try_api_call(
 
                 logger.warning("API call failed with status %d: %s", resp.status_code, resp.text)
                 last_error = f"Status {resp.status_code}: {resp.text}"
-                if not is_retriable_error(httpx.HTTPStatusError(message="", request=None, response=resp)):
-                    break
             except Exception as exc:
                 logger.warning("API call exception: %s", exc)
                 last_error = str(exc)
-                if not is_retriable_error(exc):
-                    break
-                continue
 
     return None, last_error or "All keys exhausted"
 
