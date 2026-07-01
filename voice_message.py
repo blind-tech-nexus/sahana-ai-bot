@@ -50,7 +50,7 @@ async def handle_voice(cid: int, voice: dict, name: str) -> None:
     )
 
     # Generate voice response for the AI reply
-    history = get_all_history(cid)
+    history = await get_all_history(cid)
     if not history:
         return
     last = history[-1]
@@ -59,7 +59,7 @@ async def handle_voice(cid: int, voice: dict, name: str) -> None:
     reply_text = (last.get("text") or "").strip()
     if not reply_text:
         return
-    voice_lang = get_user_voice(cid)
+    voice_lang = await get_user_voice(cid)
     voice_audio = await generate_tts(reply_text, voice_lang)
     if voice_audio:
         await send_voice_bytes(cid, voice_audio, "🎧 Voice response", "response.mp3", "audio/mpeg")

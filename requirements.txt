@@ -1,6 +1,7 @@
 fastapi
 httpx
 uvicorn
-redis
+"redis[hiredis]"
 pydantic
 reportlab
+edge-tts

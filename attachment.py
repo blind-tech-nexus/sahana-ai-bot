@@ -47,7 +47,7 @@ async def _process_non_image(cid: int, name: str, file_name: str, mime: str, fil
 
 
 async def handle_photo(cid: int, message: dict, name: str) -> None:
-    ensure_user(cid, name)
+    await ensure_user(cid, name)
     best_photo = message['photo'][-1]
     caption = message.get('caption', '').strip()
     await send_chat_action(cid, 'typing')
@@ -64,11 +64,11 @@ async def handle_photo(cid: int, message: dict, name: str) -> None:
     display = get_display_name(file_path, 'photo.jpg')
     mime = detect_mime_type(file_path, 'image/jpeg')
     encoded = base64.b64encode(file_bytes).decode('utf-8')
-    save_file_data(cid, {'mime_type': mime, 'display_name': display, 'base64': encoded})
+    await save_file_data(cid, {'mime_type': mime, 'display_name': display, 'base64': encoded})
     if caption:
         save_message(cid, 'user', f'[Image: {display}] {caption}')
         parts: list = [{'text': caption}, {'inlineData': {'mimeType': mime, 'data': encoded}}]
-        await handle_gemini(cid, parts, get_system_text(name, cid), use_tools=False)
+        await handle_gemini(cid, parts, await get_system_text(name, cid), use_tools=False)
         return
     await send_message(cid, f'✅ Image ready: <b>{escape_html(display)}</b>\n\nType your prompt or tap Describe.', parse_mode='HTML', reply_markup=photo_keyboard())
 
