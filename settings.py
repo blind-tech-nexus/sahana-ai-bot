@@ -56,6 +56,7 @@ def admin_settings_keyboard() -> dict:
         [btn("📢 Broadcast", "admin_broadcast")],
         [btn("🔄 Export Chat", "export_chat")],
         [btn("🛠 Developer & Credits", "developer_credits")],
+        [btn("⚠️ Clear Full Data", "admin_clear_full_data")],
         [btn("❌ Close", "close_settings")],
     ])
 
