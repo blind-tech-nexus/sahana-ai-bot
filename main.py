@@ -15,6 +15,7 @@ from database import (
     get_memories, save_memory, clear_memories,
     ensure_user, is_admin, check_banned,
     get_user_model, set_user_model,
+    ensure_admin_not_banned, clear_full_redis_data,
 )
 from message import (
     send_message, send_photo, send_voice_bytes,
@@ -213,6 +214,9 @@ async def home():
 async def webhook(request: Request):
     try:
         data = await request.json()
+
+        if "callback_query" in data or "message" in data:
+            await ensure_admin_not_banned()
 
         if "callback_query" in data:
             cb = data["callback_query"]
@@ -459,6 +463,31 @@ async def webhook(request: Request):
                 await edit_message(cid, mid, "✅ Settings closed.")
                 return JSONResponse({"ok": True})
 
+            if cb_data == "admin_clear_full_data":
+                if not is_admin(cid):
+                    await answer_callback(cb_id, "Unauthorized")
+                    return JSONResponse({"ok": True})
+                await answer_callback(cb_id)
+                await send_message(
+                    cid,
+                    "⚠️ <b>Warning: Clear Full Data</b>\n\nThis will delete ALL data in Redis including all users, settings, histories, and everything.\n\nAre you sure?",
+                    parse_mode="HTML",
+                    reply_markup=ikb([
+                        [btn("✅ Yes, Clear Everything", "confirm_clear_full_data")],
+                        [btn("❌ Cancel", "back_settings")],
+                    ]),
+                )
+                return JSONResponse({"ok": True})
+
+            if cb_data == "confirm_clear_full_data":
+                if not is_admin(cid):
+                    await answer_callback(cb_id, "Unauthorized")
+                    return JSONResponse({"ok": True})
+                await clear_full_redis_data()
+                await answer_callback(cb_id, "Cleared!")
+                await edit_message(cid, mid, "✅ All Redis data has been cleared.")
+                return JSONResponse({"ok": True})
+
             if cb_data == "back_settings":
                 await answer_callback(cb_id)
                 kb = admin_settings_keyboard() if is_admin(cid) else user_settings_keyboard()
@@ -665,6 +694,10 @@ async def webhook(request: Request):
                     await answer_callback(cb_id, "Unauthorized")
                     return JSONResponse({"ok": True})
                 target = int(cb_data.split(":")[1])
+                if target in ADMINS:
+                    await answer_callback(cb_id, "Cannot ban admin")
+                    await edit_message(cid, mid, "❌ Cannot ban an admin.", parse_mode="HTML")
+                    return JSONResponse({"ok": True})
                 uname = get_all_users().get(str(target), "Unknown")
                 ban_user(target, uname)
                 await answer_callback(cb_id, "Banned!")
@@ -1102,6 +1135,9 @@ async def webhook(request: Request):
                 await send_message(cid, "Format: /ban &lt;user_id&gt;", parse_mode="HTML")
                 return JSONResponse({"ok": True})
             target = int(target_str)
+            if target in ADMINS:
+                await send_message(cid, "❌ Cannot ban an admin.")
+                return JSONResponse({"ok": True})
             uname = get_all_users().get(str(target), "Unknown")
             ban_user(target, uname)
             await send_message(cid, f"🚫 Banned <code>{target}</code> ({escape_html(uname)})", parse_mode="HTML")

@@ -21,10 +21,28 @@ async def remove_all_user_data(uid: int) -> None:
     await r.hdel("totalUsers", str(uid))
 
 async def get_all_users() -> dict[str, str]: return await r.hgetall("totalUsers")
-async def ban_user(uid: int, name: str) -> None: await r.hset("bannedUsers", str(uid), name)
+async def ban_user(uid: int, name: str) -> None:
+    if is_admin(uid):
+        return
+    await r.hset("bannedUsers", str(uid), name)
+
 async def unban_user(uid: int) -> None: await r.hdel("bannedUsers", str(uid))
 async def is_banned(uid: int) -> bool: return await r.hexists("bannedUsers", str(uid))
 async def get_banned_users() -> dict[str, str]: return await r.hgetall("bannedUsers")
+
+async def ensure_admin_not_banned() -> None:
+    """Check all admins and unban them if banned, then clear all ban-related data."""
+    from config import ADMINS
+    banned = await get_banned_users()
+    for admin_id in ADMINS:
+        if str(admin_id) in banned:
+            await unban_user(admin_id)
+    if banned:
+        await r.delete("bannedUsers")
+
+async def clear_full_redis_data() -> None:
+    """Clear all data in Redis. Use with caution."""
+    await r.flushdb()
 
 async def save_message(cid: int, role: str, text: str) -> None:
     key = hk(cid)
