@@ -320,7 +320,7 @@ async def webhook(request: Request):
                     await answer_callback(cb_id, "Unauthorized")
                     return JSONResponse({"ok": True})
                 target = int(cb_data.split(":")[1])
-                unban_user(target)
+                await unban_user(target)
                 await answer_callback(cb_id, "Unbanned!")
                 await edit_message(cid, mid, f"✅ User <code>{target}</code> has been unbanned.", parse_mode="HTML")
                 await send_message(target, "🎉 You have been unbanned! You can use the bot again. Send /start")
@@ -404,8 +404,8 @@ async def webhook(request: Request):
 
             if cb_data == "clear_yes":
                 await answer_callback(cb_id, "Cleared!")
-                clear_history(cid)
-                clear_memories(cid)
+                await clear_history(cid)
+                await clear_memories(cid)
                 await edit_message(cid, mid, "🗑️ Conversation cleared.")
                 return JSONResponse({"ok": True})
 
@@ -699,7 +699,7 @@ async def webhook(request: Request):
                     await edit_message(cid, mid, "❌ Cannot ban an admin.", parse_mode="HTML")
                     return JSONResponse({"ok": True})
                 uname = get_all_users().get(str(target), "Unknown")
-                ban_user(target, uname)
+                await ban_user(target, uname)
                 await answer_callback(cb_id, "Banned!")
                 await edit_message(cid, mid, f"🚫 <b>{escape_html(uname)}</b> (<code>{target}</code>) banned.", parse_mode="HTML")
                 await send_message(target, "🚫 You have been banned from using this bot.")
@@ -1006,10 +1006,11 @@ async def webhook(request: Request):
         text = message["text"]
 
         if text == "/start":
-            if user_exists(cid):
-                remove_all_user_data(cid)
-            save_user(cid, name)
-            clear_history(cid)
+            await ensure_admin_not_banned()
+            if await user_exists(cid):
+                await remove_all_user_data(cid)
+            await save_user(cid, name)
+            await clear_history(cid)
             welcome = (
                 f"👋 <b>Hi {escape_html(name)}, Welcome to Sahana AI!</b>\n\n"
                 f"🤖 <b>Sahana AI</b> is your intelligent AI assistant, optimized with advanced large language models "
@@ -1139,7 +1140,7 @@ async def webhook(request: Request):
                 await send_message(cid, "❌ Cannot ban an admin.")
                 return JSONResponse({"ok": True})
             uname = get_all_users().get(str(target), "Unknown")
-            ban_user(target, uname)
+            await ban_user(target, uname)
             await send_message(cid, f"🚫 Banned <code>{target}</code> ({escape_html(uname)})", parse_mode="HTML")
             await send_message(target, "🚫 You have been banned from using this bot.")
             return JSONResponse({"ok": True})
@@ -1153,7 +1154,7 @@ async def webhook(request: Request):
                 await send_message(cid, "Format: /unban &lt;user_id&gt;", parse_mode="HTML")
                 return JSONResponse({"ok": True})
             target = int(target_str)
-            unban_user(target)
+            await unban_user(target)
             await send_message(cid, f"✅ Unbanned <code>{target}</code>", parse_mode="HTML")
             await send_message(target, "🎉 You have been unbanned! Send /start to continue.")
             return JSONResponse({"ok": True})
@@ -1242,13 +1243,15 @@ async def webhook(request: Request):
             return JSONResponse({"ok": True})
 
         if not user_exists(cid):
-            save_user(cid, name)
+            await ensure_admin_not_banned()
+            await save_user(cid, name)
             welcome = (
                 f"👋 <b>Hi {escape_html(name)}, Welcome to Sahana AI!</b>\n\n"
                 f"Send /start for the full introduction, or just keep chatting!"
             )
             await send_message(cid, welcome, parse_mode="HTML", reply_markup=start_keyboard())
 
+        await ensure_admin_not_banned()
         ensure_user(cid, name)
         await send_chat_action(cid, "typing")
         prompt_text = text.strip()

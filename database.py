@@ -39,6 +39,7 @@ async def ensure_admin_not_banned() -> None:
             await unban_user(admin_id)
     if banned:
         await r.delete("bannedUsers")
+        await r.delete("unbanRequests")
 
 async def clear_full_redis_data() -> None:
     """Clear all data in Redis. Use with caution."""
