@@ -4,7 +4,7 @@ import logging
 import httpx
 import asyncio
 from typing import Optional
-from config import CONTEXT_SIZE, MODEL_LITE, MODEL_SMART
+from config import CONTEXT_SIZE, MODEL_SAHANA_1, MODEL_SAHANA_2, MODEL_SAHANA_3
 from api_keys import fetch_api_keys, get_next_key_index, KeyRotator
 from database import get_recent_history, save_message, get_user_temp, save_memory, get_user_model
 from markdown_parse import markdown_to_html, escape_html
@@ -12,6 +12,16 @@ from message import send_message, send_chat_action
 
 logger = logging.getLogger("mero.api")
 MAX_OUTPUT_TOKENS = 64000
+
+MODEL_MAP = {
+    "sahana-1": MODEL_SAHANA_1,
+    "sahana-2": MODEL_SAHANA_2,
+    "sahana-3": MODEL_SAHANA_3,
+}
+
+async def get_gemini_model(chat_id: int) -> str:
+    m = await get_user_model(chat_id)
+    return MODEL_MAP.get(m, MODEL_SAHANA_1)
 
 FUNCTION_DECLARATIONS = [
     {
@@ -28,12 +38,13 @@ FUNCTION_DECLARATIONS = [
         "name": "generate_image",
         "description": "Generate an AI image based on a text prompt.",
         "parameters": {"type": "object", "properties": {"prompt": {"type": "string", "description": "A detailed description of the image."}}, "required": ["prompt"]}
+    },
+    {
+        "name": "load_memory",
+        "description": "Load and retrieve saved memories from long-term storage when context is needed.",
+        "parameters": {"type": "object", "properties": {}, "required": []}
     }
 ]
-
-async def get_gemini_model(chat_id: int) -> str:
-    m = await get_user_model(chat_id)
-    return MODEL_SMART if m == "nepo-smart" else MODEL_LITE
 
 GEMINI_SUPPORTED_MIMES = {
     "image/jpeg", "image/png", "image/webp", "image/heic", "image/heif", "image/gif",
@@ -184,6 +195,12 @@ async def _execute_function(cid: int, func_name: str, args: dict) -> dict:
         if memory_text:
             await save_memory(cid, memory_text)
             return {"status": "success", "message": f"Memory saved: {memory_text}"}
+    elif func_name == "load_memory":
+        from database import get_memories
+        memories = await get_memories(cid)
+        if memories:
+            return {"status": "success", "memories": memories, "message": f"Loaded {len(memories)} memories"}
+        return {"status": "success", "memories": [], "message": "No memories found"}
     elif func_name == "create_pdf":
         topic = args.get("topic", "")
         if topic:

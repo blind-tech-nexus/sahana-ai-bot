@@ -36,7 +36,7 @@ def user_settings_keyboard() -> dict:
         [btn("🧠 System Instructions", "set_system"), btn("🎙️ TTS Voice", "set_voice")],
         [btn("🌡️ Temperature", "set_temp"), btn("🤖 AI Model", "set_model")],
         [btn("🧠 Memory", "memory_settings")],
-        [btn("🧰 Tools", "open_tools")],
+        [btn("🔧 Tools & Features", "open_tools")],
         [btn("🗑️ Clear Chat", "clear"), btn("🧹 Clear Attachment", "cls")],
         [btn("💬 Feedback", "feedback_prompt")],
         [btn("🔄 Export Chat", "export_chat")],
@@ -50,7 +50,7 @@ def admin_settings_keyboard() -> dict:
         [btn("🧠 System Instructions", "set_system"), btn("🎙️ TTS Voice", "set_voice")],
         [btn("🌡️ Temperature", "set_temp"), btn("🤖 AI Model", "set_model")],
         [btn("🧠 Memory", "memory_settings")],
-        [btn("🧰 Tools", "open_tools")],
+        [btn("🔧 Tools & Features", "open_tools")],
         [btn("🗑️ Clear Chat", "clear"), btn("🧹 Clear Attachment", "cls")],
         [btn("📊 Total Users", "admin_total"), btn("🚫 Banned Users", "admin_banned")],
         [btn("📢 Broadcast", "admin_broadcast")],
@@ -116,7 +116,8 @@ def temp_keyboard() -> dict:
 
 def model_keyboard() -> dict:
     return ikb([
-        [btn("⚡ Nepo Lite (Fast)", "model:nepo-lite"), btn("🧠 Nepo Smart (Advanced)", "model:nepo-smart")],
+        [btn("⚡ Sahana-1 (Fast)", "model:sahana-1"), btn("🧠 Sahana-2 (Balanced)", "model:sahana-2")],
+        [btn("🔬 Sahana-3 (Advanced)", "model:sahana-3")],
         [btn("🔙 Back", "back_settings")],
     ])
 

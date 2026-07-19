@@ -17,7 +17,8 @@ def extract_group_prompt(message: dict) -> Optional[str]:
         if from_user.get("is_bot") and from_user.get("username", "").lower() == bot_username:
             is_reply_to_bot = True
             
-    aliases = {"ai"}
+    # Add default aliases including "sahana", "sahanai", "sahanaai"
+    aliases = {"ai", "sahana", "sahanai", "sahanaai"}
     for a in BOT_MENTION_ALIASES:
         if a: aliases.add(a.lower().lstrip("@"))
     if BOT_USERNAME:

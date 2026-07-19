@@ -1,2 +1,46 @@
-Nothing should be ignored based on the provided file changes, as they only include source files (.py files) without any build artifacts, dependencies, or temporary files.
-.aider*
+```
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+env/
+venv/
+.venv/
+.ENV
+.ENV.local
+.env
+.env.local
+.env.*
+requirements.txt.bak
+pip-log.txt
+pip-delete-this-directory.txt
+
+# Testing
+.coverage
+coverage/
+htmlcov/
+.noserc
+.tox/
+.coverage*
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*.tmp
+
+# Logs
+*.log
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Build artifacts
+build/
+dist/
+*.egg-info/
+```
