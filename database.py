@@ -88,5 +88,5 @@ def is_admin(uid: int) -> bool:
     return uid in ADMINS
 
 async def check_banned(cid: int) -> bool: return await is_banned(cid) and not is_admin(cid)
-async def get_credit_message() -> str: return await r.get("settings:credit_message") or "Developer: Nepo AI companion Team\nCredits: Thanks for using Nepo AI companion."
+async def get_credit_message() -> str: return await r.get("settings:credit_message") or "Developer: Sahana AI Team\nCredits: Thanks for using Sahana AI."
 async def set_credit_message(text: str) -> None: await r.set("settings:credit_message", text)

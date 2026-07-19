@@ -5,9 +5,10 @@ TELEGRAM_API = f"https://api.telegram.org/bot{BOT_TOKEN}"
 POOL_API = "https://sr-pool-api-5bm.pages.dev"
 
 # Models
-MODEL_LITE = "gemini-2.5-flash"
-MODEL_SMART = "gemini-2.5-pro"
-DEFAULT_MODEL = "nepo-lite"
+MODEL_SAHANA_1 = "gemini-2.5-flash"
+MODEL_SAHANA_2 = "gemini-2.0-flash-exp"
+MODEL_SAHANA_3 = "gemini-2.0-pro-exp-02-05"
+DEFAULT_MODEL = "sahana-1"
 
 ADMINS = [7026190306, 6280547580]
 DEFAULT_TTS_VOICE = "en-US-AriaNeural"
@@ -19,7 +20,7 @@ BOT_MENTION_ALIASES = [a.strip() for a in os.environ.get("BOT_MENTION_ALIASES", 
 MAX_HISTORY = 1000
 CONTEXT_SIZE = 50
 
-SHARE_TEXT = "🚀 Check out Nepo AI companion — your free, fast & powerful AI companion on Telegram!\nhttps://t.me/meroaiassistantbot_bot"
+SHARE_TEXT = "🚀 Check out Sahana AI — your free, fast & powerful AI companion on Telegram!\nhttps://t.me/meroaiassistantbot_bot"
 
 TEMPLATE_PROMPTS = [
     "Explain quantum computing simply",
