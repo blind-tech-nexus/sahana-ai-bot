@@ -12,7 +12,9 @@ DEFAULT_MODEL = "sahana-1"
 
 ADMINS = [7026190306, 6280547580]
 DEFAULT_TTS_VOICE = "en-US-AriaNeural"
-REDIS_URL = os.environ.get("REDIS_URL", "")
+REDIS_URL = os.environ.get("REDIS_URL")
+if not REDIS_URL:
+    raise ValueError("REDIS_URL environment variable is required. Please set it to your Redis connection URL (e.g., redis://localhost:6379)")
 
 BOT_USERNAME = os.environ.get("BOT_USERNAME", "sahanaraiai_bot")
 BOT_MENTION_ALIASES = [a.strip() for a in os.environ.get("BOT_MENTION_ALIASES", "").split(",") if a.strip()]
