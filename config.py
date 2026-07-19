@@ -6,15 +6,15 @@ POOL_API = "https://sr-pool-api-5bm.pages.dev"
 
 # Models
 MODEL_SAHANA_1 = "gemini-2.5-flash"
-MODEL_SAHANA_2 = "gemini-2.0-flash-exp"
-MODEL_SAHANA_3 = "gemini-2.0-pro-exp-02-05"
+MODEL_SAHANA_2 = "gemini-3-flash-preview"
+MODEL_SAHANA_3 = "gemini-3.5-flash"
 DEFAULT_MODEL = "sahana-1"
 
 ADMINS = [7026190306, 6280547580]
 DEFAULT_TTS_VOICE = "en-US-AriaNeural"
 REDIS_URL = os.environ.get("REDIS_URL", "")
 
-BOT_USERNAME = os.environ.get("BOT_USERNAME", "meroaiassistantbot_bot")
+BOT_USERNAME = os.environ.get("BOT_USERNAME", "sahanaraiai_bot")
 BOT_MENTION_ALIASES = [a.strip() for a in os.environ.get("BOT_MENTION_ALIASES", "").split(",") if a.strip()]
 
 MAX_HISTORY = 1000
