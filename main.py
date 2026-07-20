@@ -46,10 +46,21 @@ from attachment import (
 
 from tools import (
     open_tools_menu,
+    open_advanced_tools_menu,
     run_text_refiner,
     run_text_translator,
     run_pdf_creator,
     run_text_analyzer,
+    run_code_generator,
+    run_content_summarizer,
+    run_email_writer,
+    run_social_media_post,
+    run_study_notes,
+    run_recipe_creator,
+    run_fitness_plan,
+    run_travel_planner,
+    run_business_idea_generator,
+    run_story_writer,
     parse_text_document_bytes,
     resolve_language,
     TOOL_CANCEL,
@@ -285,21 +296,58 @@ async def webhook(request: Request):
             if cb_data.startswith("tool:"):
                 await answer_callback(cb_id)
                 tool_name = cb_data.split(":", 1)[1]
+                
+                # Core tools
                 if tool_name == "text_refiner":
                     await set_state(cid, "tool:text_refiner")
-                    await send_message(cid, "Write or upload your text. You can upload (.txt) file upto 30 kb to refine.", reply_markup=TOOL_CANCEL)
+                    await send_message(cid, "✍️ <b>Text Refiner</b>\n\nWrite or upload your text. You can upload (.txt) file up to 30 KB to refine.\n\n<i>Your text will be enhanced for grammar, clarity, and professionalism.</i>", parse_mode="HTML", reply_markup=TOOL_CANCEL)
                 elif tool_name == "text_translator":
                     await set_state(cid, "tool:text_translator:text")
-                    await send_message(cid, "Send or upload your text to translate. You can upload .txt file to translate.", reply_markup=TOOL_CANCEL)
+                    await send_message(cid, "🌐 <b>Text Translator</b>\n\nSend or upload your text to translate. You can upload .txt file to translate.\n\n<i>Next, you'll select the target language.</i>", parse_mode="HTML", reply_markup=TOOL_CANCEL)
                 elif tool_name == "pdf_creator":
                     await set_state(cid, "tool:pdf_creator")
-                    await send_message(cid, "Write a topic or subject to create a pdf with AI.", reply_markup=TOOL_CANCEL)
+                    await send_message(cid, "📄 <b>PDF Creator</b>\n\nWrite a topic or subject to create a PDF document with AI.\n\n<i>I'll generate comprehensive content and convert it to PDF.</i>", parse_mode="HTML", reply_markup=TOOL_CANCEL)
                 elif tool_name == "text_analyzer":
                     await set_state(cid, "tool:text_analyzer")
-                    await send_message(cid, "Write or upload your .txt to analyze.", reply_markup=TOOL_CANCEL)
+                    await send_message(cid, "📊 <b>Text Analyzer</b>\n\nWrite or upload your .txt file to analyze.\n\n<i>Get detailed statistics and insights about your text.</i>", parse_mode="HTML", reply_markup=TOOL_CANCEL)
                 elif tool_name == "audio_transcriber":
                     await set_state(cid, "tool:audio_transcriber")
-                    await send_message(cid, "Upload your audio. I am ready to transcribe.", reply_markup=TOOL_CANCEL)
+                    await send_message(cid, "🎙️ <b>Audio Transcriber</b>\n\nUpload your audio file. I am ready to transcribe.\n\n<i>Supports MP3, WAV, OGG, M4A formats.</i>", parse_mode="HTML", reply_markup=TOOL_CANCEL)
+                
+                # Advanced tools
+                elif tool_name == "code_generator":
+                    await set_state(cid, "tool:code_generator")
+                    await send_message(cid, "💻 <b>Code Generator</b>\n\nDescribe what code you need. Be specific about:\n• Programming language\n• Functionality required\n• Any specific requirements\n\n<i>I'll generate clean, production-ready code.</i>", parse_mode="HTML", reply_markup=TOOL_CANCEL)
+                elif tool_name == "content_summarizer":
+                    await set_state(cid, "tool:content_summarizer")
+                    await send_message(cid, "📝 <b>Content Summarizer</b>\n\nSend or paste the content you want summarized.\n\n<i>I'll extract key points and create a concise summary.</i>", parse_mode="HTML", reply_markup=TOOL_CANCEL)
+                elif tool_name == "email_writer":
+                    await set_state(cid, "tool:email_writer")
+                    await send_message(cid, "📧 <b>Email Writer</b>\n\nDescribe the email you need:\n• Purpose/Context\n• Recipient\n• Desired tone (professional, casual, friendly)\n\n<i>I'll craft a professional email for you.</i>", parse_mode="HTML", reply_markup=TOOL_CANCEL)
+                elif tool_name == "social_media_post":
+                    await set_state(cid, "tool:social_media_post")
+                    await send_message(cid, "📱 <b>Social Media Post Creator</b>\n\nTell me:\n• Topic/Content\n• Platform (Instagram, Twitter, LinkedIn, Facebook)\n\n<i>I'll create an engaging, viral-worthy post.</i>", parse_mode="HTML", reply_markup=TOOL_CANCEL)
+                elif tool_name == "study_notes":
+                    await set_state(cid, "tool:study_notes")
+                    await send_message(cid, "📚 <b>Study Notes Generator</b>\n\nSpecify:\n• Subject/Topic\n• Level (beginner, intermediate, advanced)\n\n<i>I'll create comprehensive study materials.</i>", parse_mode="HTML", reply_markup=TOOL_CANCEL)
+                elif tool_name == "recipe_creator":
+                    await set_state(cid, "tool:recipe_creator")
+                    await send_message(cid, "🍳 <b>Recipe Creator</b>\n\nTell me:\n• Available ingredients\n• Dietary preferences (vegetarian, vegan, any)\n\n<i>I'll create a delicious custom recipe.</i>", parse_mode="HTML", reply_markup=TOOL_CANCEL)
+                elif tool_name == "fitness_plan":
+                    await set_state(cid, "tool:fitness_plan")
+                    await send_message(cid, "💪 <b>Fitness Plan Generator</b>\n\nSpecify:\n• Your fitness goal\n• Experience level (beginner, intermediate, advanced)\n• Duration (number of days)\n\n<i>I'll create a personalized workout plan.</i>", parse_mode="HTML", reply_markup=TOOL_CANCEL)
+                elif tool_name == "travel_planner":
+                    await set_state(cid, "tool:travel_planner")
+                    await send_message(cid, "✈️ <b>Travel Planner</b>\n\nTell me:\n• Destination\n• Trip duration\n• Budget (low, moderate, high)\n\n<i>I'll create a detailed travel itinerary.</i>", parse_mode="HTML", reply_markup=TOOL_CANCEL)
+                elif tool_name == "business_idea_generator":
+                    await set_state(cid, "tool:business_idea_generator")
+                    await send_message(cid, "💡 <b>Business Idea Generator</b>\n\nSpecify:\n• Industry/Sector\n• Investment level (low, medium, high)\n\n<i>I'll generate innovative business ideas.</i>", parse_mode="HTML", reply_markup=TOOL_CANCEL)
+                elif tool_name == "story_writer":
+                    await set_state(cid, "tool:story_writer")
+                    await send_message(cid, "📖 <b>Story Writer</b>\n\nTell me:\n• Genre (fantasy, romance, thriller, etc.)\n• Story prompt/idea\n• Preferred length (short, medium, long)\n\n<i>I'll craft a compelling narrative.</i>", parse_mode="HTML", reply_markup=TOOL_CANCEL)
+                elif tool_name == "advanced_tools_menu":
+                    await open_advanced_tools_menu(cid)
+                
                 return JSONResponse({"ok": True})
 
             if cb_data == "request_unban":
@@ -852,12 +900,13 @@ async def webhook(request: Request):
                     return JSONResponse({"ok": True})
 
                 if st.startswith("tool:"):
+                    # Core tools
                     if st == "tool:text_refiner":
                         await run_text_refiner(cid, text)
                         return JSONResponse({"ok": True})
                     if st == "tool:text_translator:text":
                         await set_state(cid, f"tool:text_translator:lang:{text}")
-                        await send_message(cid, "Send your target language for translation function.", reply_markup=TOOL_CANCEL)
+                        await send_message(cid, "🌐 Now send your target language (e.g., 'Spanish', 'fr', 'French').", reply_markup=TOOL_CANCEL, parse_mode="HTML")
                         return JSONResponse({"ok": True})
                     if st.startswith("tool:text_translator:lang:"):
                         source_text = st.split(":", 3)[3]
@@ -875,7 +924,39 @@ async def webhook(request: Request):
                         await run_text_analyzer(cid, text)
                         return JSONResponse({"ok": True})
                     if st == "tool:audio_transcriber":
-                        await send_message(cid, "Upload voice/audio file to transcribe.", reply_markup=TOOL_CANCEL)
+                        await send_message(cid, "🎙️ Upload voice/audio file to transcribe.", reply_markup=TOOL_CANCEL, parse_mode="HTML")
+                        return JSONResponse({"ok": True})
+                    
+                    # Advanced tools
+                    if st == "tool:code_generator":
+                        await run_code_generator(cid, text)
+                        return JSONResponse({"ok": True})
+                    if st == "tool:content_summarizer":
+                        await run_content_summarizer(cid, text)
+                        return JSONResponse({"ok": True})
+                    if st == "tool:email_writer":
+                        await run_email_writer(cid, text)
+                        return JSONResponse({"ok": True})
+                    if st == "tool:social_media_post":
+                        await run_social_media_post(cid, text)
+                        return JSONResponse({"ok": True})
+                    if st == "tool:study_notes":
+                        await run_study_notes(cid, text)
+                        return JSONResponse({"ok": True})
+                    if st == "tool:recipe_creator":
+                        await run_recipe_creator(cid, text)
+                        return JSONResponse({"ok": True})
+                    if st == "tool:fitness_plan":
+                        await run_fitness_plan(cid, text)
+                        return JSONResponse({"ok": True})
+                    if st == "tool:travel_planner":
+                        await run_travel_planner(cid, text)
+                        return JSONResponse({"ok": True})
+                    if st == "tool:business_idea_generator":
+                        await run_business_idea_generator(cid, text)
+                        return JSONResponse({"ok": True})
+                    if st == "tool:story_writer":
+                        await run_story_writer(cid, text)
                         return JSONResponse({"ok": True})
 
                 if st.startswith("awaiting_file_prompt:"):
