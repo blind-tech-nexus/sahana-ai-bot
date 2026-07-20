@@ -14,8 +14,8 @@ def _inline_part(mime: str, file_bytes: bytes) -> dict:
 
 async def _store_and_prompt(cid: int, file_name: str, mime: str, file_bytes: bytes, label: str) -> None:
     encoded = base64.b64encode(file_bytes).decode('utf-8')
-    save_file_data(cid, {'mime_type': mime, 'display_name': file_name, 'base64': encoded})
-    set_state(cid, f'awaiting_file_prompt:{file_name}')
+    await save_file_data(cid, {'mime_type': mime, 'display_name': file_name, 'base64': encoded})
+    await set_state(cid, f'awaiting_file_prompt:{file_name}')
     await send_message(
         cid,
         f'✅ {label} ready: <b>{escape_html(file_name)}</b>\n\nType your prompt for this file.',
@@ -39,9 +39,9 @@ async def _process_non_image(cid: int, name: str, file_name: str, mime: str, fil
             return
 
     if caption:
-        save_message(cid, 'user', f'[{tag}: {file_name}] {caption}')
+        await save_message(cid, 'user', f'[{tag}: {file_name}] {caption}')
         parts: list = [{'text': caption}, _inline_part(mime, file_bytes)]
-        await handle_gemini(cid, parts, get_system_text(name, cid), use_tools=False)
+        await handle_gemini(cid, parts, await get_system_text(name, cid), use_tools=False)
         return
     await _store_and_prompt(cid, file_name, mime, file_bytes, upload_label)
 
@@ -66,7 +66,7 @@ async def handle_photo(cid: int, message: dict, name: str) -> None:
     encoded = base64.b64encode(file_bytes).decode('utf-8')
     await save_file_data(cid, {'mime_type': mime, 'display_name': display, 'base64': encoded})
     if caption:
-        save_message(cid, 'user', f'[Image: {display}] {caption}')
+        await save_message(cid, 'user', f'[Image: {display}] {caption}')
         parts: list = [{'text': caption}, {'inlineData': {'mimeType': mime, 'data': encoded}}]
         await handle_gemini(cid, parts, await get_system_text(name, cid), use_tools=False)
         return
@@ -74,7 +74,7 @@ async def handle_photo(cid: int, message: dict, name: str) -> None:
 
 
 async def handle_document(cid: int, message: dict, name: str) -> None:
-    ensure_user(cid, name)
+    await ensure_user(cid, name)
     doc = message['document']
     file_name = doc.get('file_name', 'document')
     provided_mime = doc.get('mime_type', '')
@@ -96,7 +96,7 @@ async def handle_document(cid: int, message: dict, name: str) -> None:
 
 
 async def handle_audio(cid: int, message: dict, name: str) -> None:
-    ensure_user(cid, name)
+    await ensure_user(cid, name)
     audio = message['audio']
     file_name = audio.get('file_name', 'audio.mp3')
     provided_mime = audio.get('mime_type', 'audio/mpeg')
@@ -116,7 +116,7 @@ async def handle_audio(cid: int, message: dict, name: str) -> None:
 
 
 async def handle_video(cid: int, message: dict, name: str) -> None:
-    ensure_user(cid, name)
+    await ensure_user(cid, name)
     video = message.get('video') or message.get('video_note', {})
     file_name = video.get('file_name', 'video.mp4')
     provided_mime = video.get('mime_type', 'video/mp4')
@@ -136,7 +136,7 @@ async def handle_video(cid: int, message: dict, name: str) -> None:
 
 
 async def handle_animation(cid: int, message: dict, name: str) -> None:
-    ensure_user(cid, name)
+    await ensure_user(cid, name)
     anim = message['animation']
     file_name = anim.get('file_name', 'animation.gif')
     provided_mime = anim.get('mime_type', 'video/mp4')
@@ -152,7 +152,7 @@ async def handle_animation(cid: int, message: dict, name: str) -> None:
 
 
 async def handle_sticker(cid: int, message: dict, name: str) -> None:
-    ensure_user(cid, name)
+    await ensure_user(cid, name)
     sticker = message['sticker']
     if sticker.get('is_animated') or sticker.get('is_video'):
         await send_message(cid, '⚠️ Animated/video stickers are not supported. Send a static sticker.')
@@ -163,7 +163,7 @@ async def handle_sticker(cid: int, message: dict, name: str) -> None:
         await send_message(cid, '❌ Failed to download sticker.')
         return
     encoded = base64.b64encode(file_bytes).decode('utf-8')
-    save_file_data(cid, {'mime_type': 'image/webp', 'display_name': 'sticker.webp', 'base64': encoded})
-    save_message(cid, 'user', '[Sticker] Describe this sticker')
+    await save_file_data(cid, {'mime_type': 'image/webp', 'display_name': 'sticker.webp', 'base64': encoded})
+    await save_message(cid, 'user', '[Sticker] Describe this sticker')
     parts: list = [{'text': 'Describe this sticker and react to it naturally.'}, {'inlineData': {'mimeType': 'image/webp', 'data': encoded}}]
-    await handle_gemini(cid, parts, get_system_text(name, cid), use_tools=False)
+    await handle_gemini(cid, parts, await get_system_text(name, cid), use_tools=False)
