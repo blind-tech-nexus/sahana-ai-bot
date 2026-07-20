@@ -151,11 +151,22 @@ def broadcast_reply_keyboard() -> dict:
 
 def tools_keyboard() -> dict:
     return ikb([
-        [btn("✨ Text refiner", "tool:text_refiner")],
-        [btn("🌐 Text translator", "tool:text_translator")],
-        [btn("📊 Text analyzer", "tool:text_analyzer")],
-        [btn("📄 PDF creator", "tool:pdf_creator")],
-        [btn("🎙️ Audio transcriber", "tool:audio_transcriber")],
+        [btn("✨ Text Refiner", "tool:text_refiner"), btn("🌐 Text Translator", "tool:text_translator")],
+        [btn("📊 Text Analyzer", "tool:text_analyzer"), btn("📄 PDF Creator", "tool:pdf_creator")],
+        [btn("🎙️ Audio Transcriber", "tool:audio_transcriber")],
+        [btn("🚀 Advanced Tools", "advanced_tools_menu")],
+        [btn("❌ Close", "tools_close")],
+    ])
+
+
+def advanced_tools_keyboard() -> dict:
+    return ikb([
+        [btn("💻 Code Generator", "tool:code_generator"), btn("📝 Content Summarizer", "tool:content_summarizer")],
+        [btn("📧 Email Writer", "tool:email_writer"), btn("📱 Social Media Post", "tool:social_media_post")],
+        [btn("📚 Study Notes", "tool:study_notes"), btn("🍳 Recipe Creator", "tool:recipe_creator")],
+        [btn("💪 Fitness Plan", "tool:fitness_plan"), btn("✈️ Travel Planner", "tool:travel_planner")],
+        [btn("💡 Business Ideas", "tool:business_idea_generator"), btn("📖 Story Writer", "tool:story_writer")],
+        [btn("🔙 Back to Core Tools", "open_tools")],
         [btn("❌ Close", "tools_close")],
     ])
 
