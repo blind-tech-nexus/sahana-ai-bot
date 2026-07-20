@@ -44,10 +44,19 @@ class KeyRotator:
         self._start_idx = start_idx
         self._tried = 0
 
-    def get_next_key(self) -> Optional[str]:
+    def get_next_key(self, tried_keys: list[int] | None = None) -> Optional[str]:
         if not self._keys or self._tried >= len(self._keys): return None
         idx = (self._start_idx + self._tried) % len(self._keys)
         self._tried += 1
+        # If tried_keys is provided, skip keys that are already in it
+        if tried_keys is not None and idx in tried_keys:
+            # Try to find next non-tried key
+            for offset in range(1, len(self._keys) + 1):
+                next_idx = (self._start_idx + self._tried + offset - 1) % len(self._keys)
+                if next_idx not in tried_keys:
+                    self._tried += offset
+                    return self._keys[next_idx]
+            return None
         return self._keys[idx]
 
 def is_retriable_error(e: Exception) -> bool:

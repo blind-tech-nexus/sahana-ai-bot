@@ -6,7 +6,7 @@ import asyncio
 from typing import Optional
 from config import CONTEXT_SIZE, MODEL_SAHANA_1, MODEL_SAHANA_2, MODEL_SAHANA_3
 from api_keys import fetch_api_keys, get_next_key_index, KeyRotator
-from database import get_recent_history, save_message, get_user_temp, save_memory, get_user_model
+from database import get_recent_history, save_message, get_user_temp, save_memory, get_user_model, get_user_tools
 from markdown_parse import markdown_to_html, escape_html
 from message import send_message, send_chat_action
 
@@ -86,17 +86,23 @@ async def try_api_call(body_json: str, model: str) -> tuple[Optional[str], Optio
     if not await fetch_api_keys(): return None, "No API keys available"
     start_idx = await get_next_key_index()
     rotator = KeyRotator(start_idx)
+    tried_keys: list[int] = []  # Track indices of tried keys that failed
     last_error = None
+    current_idx = start_idx
     async with httpx.AsyncClient(timeout=120.0, limits=httpx.Limits(max_connections=500, max_keepalive_connections=100)) as client:
         while True:
-            key = rotator.get_next_key()
+            key = rotator.get_next_key(tried_keys)
             if key is None: break
+            # Calculate current key index for tracking
+            current_idx = (start_idx + rotator._tried - 1) % len(api_keys) if api_keys else 0
             url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={key}"
             try:
                 resp = await client.post(url, content=body_json, headers={"Content-Type": "application/json"})
                 if resp.status_code == 200: return resp.text, None
                 error_text = resp.text
                 logger.warning(f"API call failed with status {resp.status_code}: {error_text}")
+                # Add this key index to tried_keys since it failed
+                tried_keys.append(current_idx)
                 if resp.status_code == 429:
                     await asyncio.sleep(0.5)
                     last_error = f"Status 429: Rate limit"
@@ -105,9 +111,12 @@ async def try_api_call(body_json: str, model: str) -> tuple[Optional[str], Optio
                     await asyncio.sleep(1.0)
                     last_error = f"Status {resp.status_code}: Server error"
                     continue
-                return None, f"Status {resp.status_code}: {error_text}"
+                # For non-retriable errors (4xx except 429), still try other keys but log
+                last_error = f"Status {resp.status_code}: {error_text}"
+                continue
             except Exception as exc:
                 logger.warning(f"API call exception: {exc}")
+                tried_keys.append(current_idx)
                 last_error = str(exc)
                 await asyncio.sleep(1.0)
     return None, last_error or "All keys exhausted"
@@ -141,11 +150,15 @@ def build_body(history_messages: list[dict], current_parts: list, system_text: s
         "contents": alternating_contents,
         "generationConfig": {"maxOutputTokens": MAX_OUTPUT_TOKENS, "temperature": 1.0},
     }
+    # Build tools list - google_search and functionDeclarations cannot be combined
+    # If both are requested, prioritize functionDeclarations (function calling)
     if use_tools or use_functions:
-        tools: list[dict] = []
-        if use_tools: tools.append({"google_search": {}})
-        if use_functions: tools.append({"functionDeclarations": FUNCTION_DECLARATIONS})
-        body["tools"] = tools
+        if use_functions:
+            # Function calling takes priority; google_search excluded when functions are used
+            body["tools"] = [{"functionDeclarations": FUNCTION_DECLARATIONS}]
+        elif use_tools:
+            # Only google_search when functions are not used
+            body["tools"] = [{"google_search": {}}]
     return body
 
 def extract_sources(data: dict) -> list[dict]:
@@ -253,7 +266,15 @@ async def call_gemini_raw(cid: int, parts: list, system_text: str) -> Optional[s
 async def handle_gemini(cid: int, current_parts: list, system_text: str, use_tools: bool = True, use_functions: bool = True, user_name: str = "User") -> Optional[str]:
     model = await get_gemini_model(cid)
     history = await get_recent_history(cid, CONTEXT_SIZE)
-    body = build_body(history, current_parts, system_text, use_tools, use_functions)
+    
+    # Get user tool preferences and apply them
+    user_tools = await get_user_tools(cid)
+    # If user has google_search enabled but functions are also requested, disable google_search to avoid 400 error
+    effective_use_tools = use_tools and user_tools.get("google_search", False)
+    # Function calling is always enabled when use_functions=True (for memory, pdf, image generation)
+    effective_use_functions = use_functions
+    
+    body = build_body(history, current_parts, system_text, effective_use_tools, effective_use_functions)
     body["generationConfig"]["temperature"] = await get_user_temp(cid)
     
     if not await fetch_api_keys():
