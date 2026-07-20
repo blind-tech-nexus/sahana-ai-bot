@@ -1,1 +1,39 @@
-Nothing should be ignored since only source code files (.py) were modified.
+```
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Dependencies
+.venv/
+venv/
+env/
+pip-log.txt
+pip-selfcheck.json
+
+# Logs
+*.log
+
+# Environment variables
+.env
+.env.local
+*.env
+
+# Coverage reports
+.coverage
+coverage/
+htmlcov/
+
+# Testing
+.pytest_cache/
+.mypy_cache/
+.hypothesis/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+```

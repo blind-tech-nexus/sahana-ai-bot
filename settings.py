@@ -37,6 +37,7 @@ def user_settings_keyboard() -> dict:
         [btn("🌡️ Temperature", "set_temp"), btn("🤖 AI Model", "set_model")],
         [btn("🧠 Memory", "memory_settings")],
         [btn("🔧 Tools & Features", "open_tools")],
+        [btn("⚙️ Preferences", "preferences_menu")],
         [btn("🗑️ Clear Chat", "clear"), btn("🧹 Clear Attachment", "cls")],
         [btn("💬 Feedback", "feedback_prompt")],
         [btn("🔄 Export Chat", "export_chat")],
@@ -156,6 +157,23 @@ def tools_keyboard() -> dict:
         [btn("📄 PDF creator", "tool:pdf_creator")],
         [btn("🎙️ Audio transcriber", "tool:audio_transcriber")],
         [btn("❌ Close", "tools_close")],
+    ])
+
+def preferences_keyboard(tools_config: dict) -> dict:
+    """Generate keyboard for user tool preferences.
+    
+    Args:
+        tools_config: Dict with keys 'google_search', 'code_execution', 'url_understanding' (bool values)
+    """
+    gs_status = "✅ ON" if tools_config.get("google_search", False) else "❌ OFF"
+    ce_status = "✅ ON" if tools_config.get("code_execution", False) else "❌ OFF"
+    uu_status = "✅ ON" if tools_config.get("url_understanding", False) else "❌ OFF"
+    
+    return ikb([
+        [btn(f"🔍 Google Search {gs_status}", "pref_toggle_google_search")],
+        [btn(f"💻 Code Execution {ce_status}", "pref_toggle_code_execution")],
+        [btn(f"🌐 URL Understanding {uu_status}", "pref_toggle_url_understanding")],
+        [btn("🔙 Back", "back_settings")],
     ])
 
 def share_keyboard() -> dict:

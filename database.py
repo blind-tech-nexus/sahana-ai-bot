@@ -103,6 +103,19 @@ async def set_user_model(cid: int, model: str) -> None: await r.set(f"settings:{
 async def ensure_user(cid: int, name: str) -> None:
     if not await user_exists(cid): await save_user(cid, name)
 
+# User tool preferences stored as JSON: {"google_search": false, "code_execution": false, "url_understanding": false}
+async def get_user_tools(cid: int) -> dict:
+    val = await r.get(f"settings:{cid}:tools")
+    if val:
+        try:
+            return json.loads(val)
+        except Exception:
+            pass
+    return {"google_search": False, "code_execution": False, "url_understanding": False}
+
+async def set_user_tools(cid: int, tools: dict) -> None:
+    await r.set(f"settings:{cid}:tools", json.dumps(tools))
+
 def is_admin(uid: int) -> bool:
     from config import ADMINS
     return uid in ADMINS

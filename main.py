@@ -16,6 +16,7 @@ from database import (
     ensure_user, is_admin, check_banned,
     get_user_model, set_user_model,
     ensure_admin_not_banned, clear_full_redis_data,
+    get_user_tools, set_user_tools,
 )
 from message import (
     send_message, send_photo, send_voice_bytes,
@@ -29,7 +30,7 @@ from settings import (
     user_settings_keyboard, admin_settings_keyboard,
     voice_keyboard, temp_keyboard, model_keyboard, photo_keyboard, file_prompt_keyboard, language_name,
     admin_reply_keyboard, admin_user_reply_keyboard, broadcast_reply_keyboard,
-    share_keyboard,
+    share_keyboard, preferences_keyboard,
 )
 from markdown_parse import escape_html
 from api import handle_gemini
@@ -492,6 +493,36 @@ async def webhook(request: Request):
                 await answer_callback(cb_id)
                 kb = admin_settings_keyboard() if is_admin(cid) else user_settings_keyboard()
                 await edit_message(cid, mid, "⚙️ <b>Settings</b>", parse_mode="HTML", reply_markup=kb)
+                return JSONResponse({"ok": True})
+
+            if cb_data == "preferences_menu":
+                await answer_callback(cb_id)
+                tools_config = await get_user_tools(cid)
+                await edit_message(
+                    cid, mid,
+                    "⚙️ <b>Tool Preferences</b>\n\nThese settings control which external tools the AI can use:\n"
+                    "• 🔍 <b>Google Search</b>: Let AI search the web for current information\n"
+                    "• 💻 <b>Code Execution</b>: Allow AI to execute code (coming soon)\n"
+                    "• 🌐 <b>URL Understanding</b>: Enable AI to analyze URLs and web content (coming soon)\n\n"
+                    "<i>Note: When function calling is active (for memory, PDF, image generation), Google Search is automatically disabled to avoid API conflicts.</i>",
+                    parse_mode="HTML",
+                    reply_markup=preferences_keyboard(tools_config),
+                )
+                return JSONResponse({"ok": True})
+
+            if cb_data.startswith("pref_toggle_"):
+                pref_name = cb_data.replace("pref_toggle_", "")
+                tools_config = await get_user_tools(cid)
+                current_val = tools_config.get(pref_name, False)
+                tools_config[pref_name] = not current_val
+                await set_user_tools(cid, tools_config)
+                await answer_callback(cb_id, f"{pref_name}: {'ON' if not current_val else 'OFF'}")
+                await edit_message(
+                    cid, mid,
+                    f"✅ <b>Preference Updated</b>\n\n{pref_name} is now <b>{'ON' if not current_val else 'OFF'}</b>",
+                    parse_mode="HTML",
+                    reply_markup=preferences_keyboard(tools_config),
+                )
                 return JSONResponse({"ok": True})
 
             if cb_data == "developer_credits":
