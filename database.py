@@ -31,15 +31,16 @@ async def is_banned(uid: int) -> bool: return await r.hexists("bannedUsers", str
 async def get_banned_users() -> dict[str, str]: return await r.hgetall("bannedUsers")
 
 async def ensure_admin_not_banned() -> None:
-    """Check all admins and unban them if banned, then clear all ban-related data."""
+    """Repair Redis immediately if any configured admin was banned.
+
+    Admins must never be banned. If stale/corrupt Redis data contains a banned
+    admin, clear the entire database so all ban/unban state and related bot data
+    is removed before the update continues.
+    """
     from config import ADMINS
     banned = await get_banned_users()
-    for admin_id in ADMINS:
-        if str(admin_id) in banned:
-            await unban_user(admin_id)
-    if banned:
-        await r.delete("bannedUsers")
-        await r.delete("unbanRequests")
+    if any(str(admin_id) in banned for admin_id in ADMINS):
+        await r.flushdb()
 
 async def clear_full_redis_data() -> None:
     """Clear all data in Redis. Use with caution."""

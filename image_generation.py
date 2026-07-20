@@ -16,8 +16,8 @@ async def execute_image(cid: int, query: str, name: str) -> None:
                 data = resp.json()
                 if data.get("success") and "output" in data:
                     await send_photo(cid, data["output"], f"🎨 {query}", reply_markup=ikb([[btn("🔄 Regenerate", f"regen_img:{query[:60]}")]]))
-                    save_message(cid, "user", f"Generate image: {query}")
-                    save_message(cid, "model", f"Generated image for: {query}")
+                    await save_message(cid, "user", f"Generate image: {query}")
+                    await save_message(cid, "model", f"Generated image for: {query}")
                     return
         await send_message(cid, "❌ Image generation failed. Please try again.")
     except Exception as e:
