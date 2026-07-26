@@ -31,33 +31,37 @@ async def fetch_api_keys() -> bool:
     return bool(api_keys)
 
 async def get_next_key_index() -> int:
+    """Return the next round-robin start index for a Gemini request."""
     global _key_index
     async with _key_lock:
-        if not api_keys: return 0
-        idx = _key_index
-        _key_index = (_key_index + 1) % len(api_keys)
+        if not api_keys:
+            return 0
+        idx = _key_index % len(api_keys)
+        _key_index = (idx + 1) % len(api_keys)
         return idx
 
 class KeyRotator:
+    """Per-request key iterator.
+
+    Each Gemini request starts from the shared round-robin index, then tries
+    every currently cached key at most once: key one, key two, etc.  Failed
+    indices are recorded in ``tried_keys`` for logging/inspection; skipping is
+    intentionally not based on caller state so one bad bookkeeping value cannot
+    prematurely exhaust rotation.
+    """
     def __init__(self, start_idx: int):
         self._keys = list(api_keys)
-        self._start_idx = start_idx
-        self._tried = 0
+        self._start_idx = start_idx % len(self._keys) if self._keys else 0
+        self._offset = 0
 
-    def get_next_key(self, tried_keys: list[int] | None = None) -> Optional[str]:
-        if not self._keys or self._tried >= len(self._keys): return None
-        idx = (self._start_idx + self._tried) % len(self._keys)
-        self._tried += 1
-        # If tried_keys is provided, skip keys that are already in it
-        if tried_keys is not None and idx in tried_keys:
-            # Try to find next non-tried key
-            for offset in range(1, len(self._keys) + 1):
-                next_idx = (self._start_idx + self._tried + offset - 1) % len(self._keys)
-                if next_idx not in tried_keys:
-                    self._tried += offset
-                    return self._keys[next_idx]
-            return None
-        return self._keys[idx]
+    def get_next_key(self, tried_keys: list[int] | None = None) -> tuple[Optional[int], Optional[str]]:
+        if not self._keys or self._offset >= len(self._keys):
+            return None, None
+        idx = (self._start_idx + self._offset) % len(self._keys)
+        self._offset += 1
+        if tried_keys is not None and idx not in tried_keys:
+            tried_keys.append(idx)
+        return idx, self._keys[idx]
 
 def is_retriable_error(e: Exception) -> bool:
     err_str = str(e).lower()
