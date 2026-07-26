@@ -52,6 +52,7 @@ def admin_settings_keyboard() -> dict:
         [btn("🌡️ Temperature", "set_temp"), btn("🤖 AI Model", "set_model")],
         [btn("🧠 Memory", "memory_settings")],
         [btn("🔧 Tools & Features", "open_tools")],
+        [btn("⚙️ Preferences", "preferences_menu")],
         [btn("🗑️ Clear Chat", "clear"), btn("🧹 Clear Attachment", "cls")],
         [btn("📊 Total Users", "admin_total"), btn("🚫 Banned Users", "admin_banned")],
         [btn("📢 Broadcast", "admin_broadcast")],

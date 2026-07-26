@@ -550,9 +550,9 @@ async def webhook(request: Request):
                     cid, mid,
                     "⚙️ <b>Tool Preferences</b>\n\nThese settings control which external tools the AI can use:\n"
                     "• 🔍 <b>Google Search</b>: Let AI search the web for current information\n"
-                    "• 💻 <b>Code Execution</b>: Allow AI to execute code (coming soon)\n"
-                    "• 🌐 <b>URL Understanding</b>: Enable AI to analyze URLs and web content (coming soon)\n\n"
-                    "<i>Note: When function calling is active (for memory, PDF, image generation), Google Search is automatically disabled to avoid API conflicts.</i>",
+                    "• 💻 <b>Code Execution</b>: Let AI run Python code on Google's servers\n"
+                    "• 🌐 <b>URL Understanding</b>: Let AI read and reason over URLs you provide\n\n"
+                    "<i>Note: If any extra tool is ON, Sahana's custom function calling is excluded for that request to avoid Gemini generateContent API conflicts.</i>",
                     parse_mode="HTML",
                     reply_markup=preferences_keyboard(tools_config),
                 )
@@ -575,7 +575,7 @@ async def webhook(request: Request):
 
             if cb_data == "developer_credits":
                 await answer_callback(cb_id)
-                credit_message = get_credit_message()
+                credit_message = await get_credit_message()
                 if is_admin(cid):
                     await edit_message(
                         cid,

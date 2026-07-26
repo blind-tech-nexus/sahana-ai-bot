@@ -17,7 +17,7 @@ async def user_exists(uid: int) -> bool: return await r.hexists("totalUsers", st
 
 async def remove_all_user_data(uid: int) -> None:
     await r.delete(hk(uid), rsk(uid), sk(uid), fk(uid), mk(uid), ck(uid))
-    await r.delete(f"settings:{uid}:system", f"settings:{uid}:voice", f"settings:{uid}:temp", f"settings:{uid}:model")
+    await r.delete(f"settings:{uid}:system", f"settings:{uid}:voice", f"settings:{uid}:temp", f"settings:{uid}:model", f"settings:{uid}:tools")
     await r.hdel("totalUsers", str(uid))
 
 async def get_all_users() -> dict[str, str]: return await r.hgetall("totalUsers")
@@ -104,17 +104,25 @@ async def ensure_user(cid: int, name: str) -> None:
     if not await user_exists(cid): await save_user(cid, name)
 
 # User tool preferences stored as JSON: {"google_search": false, "code_execution": false, "url_understanding": false}
+DEFAULT_USER_TOOLS = {"google_search": False, "code_execution": False, "url_understanding": False}
+
 async def get_user_tools(cid: int) -> dict:
     val = await r.get(f"settings:{cid}:tools")
+    tools = dict(DEFAULT_USER_TOOLS)
     if val:
         try:
-            return json.loads(val)
+            stored = json.loads(val)
+            if isinstance(stored, dict):
+                tools.update({k: bool(stored.get(k, False)) for k in DEFAULT_USER_TOOLS})
         except Exception:
             pass
-    return {"google_search": False, "code_execution": False, "url_understanding": False}
+    return tools
 
 async def set_user_tools(cid: int, tools: dict) -> None:
-    await r.set(f"settings:{cid}:tools", json.dumps(tools))
+    clean = dict(DEFAULT_USER_TOOLS)
+    if isinstance(tools, dict):
+        clean.update({k: bool(tools.get(k, False)) for k in DEFAULT_USER_TOOLS})
+    await r.set(f"settings:{cid}:tools", json.dumps(clean))
 
 def is_admin(uid: int) -> bool:
     from config import ADMINS
