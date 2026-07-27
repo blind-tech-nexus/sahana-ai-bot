@@ -9,7 +9,7 @@ from reportlab.lib.pagesizes import A4
 from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
 from reportlab.platypus import PageBreak, Paragraph, SimpleDocTemplate, Spacer
 
-from api import call_gemini_raw, get_gemini_model
+from api import call_gemini_raw
 from message import send_document_bytes, send_message
 
 
@@ -132,8 +132,18 @@ def render_pdf(doc: PdfDocument) -> bytes:
     return buf.getvalue()
 
 
-async def execute_text_to_pdf(cid: int, prompt: str) -> None:
-    await send_message(cid, "📄 Creating your PDF document...")
+def _safe_pdf_filename(name: str | None) -> str:
+    cleaned = re.sub(r"[^a-zA-Z0-9_.-]+", "_", (name or "").strip()).strip("._")
+    if not cleaned:
+        cleaned = "sahana_document"
+    if not cleaned.lower().endswith(".pdf"):
+        cleaned += ".pdf"
+    return cleaned
+
+
+async def execute_text_to_pdf(cid: int, prompt: str, file_name: str | None = None, announce: bool = True) -> bool:
+    if announce:
+        await send_message(cid, "📄 Creating your PDF document...")
 
     system_text = (
         "Create PDF-ready content as clean XML-like markup. "
@@ -152,19 +162,21 @@ async def execute_text_to_pdf(cid: int, prompt: str) -> None:
     raw = await call_gemini_raw(cid, [{"text": user_prompt}], system_text)
     if not raw:
         await send_message(cid, "❌ Failed to generate PDF content. Please try again.")
-        return
+        return False
 
     try:
         parsed = parse_pdf_markup(raw)
         pdf_bytes = render_pdf(parsed)
     except Exception:
         await send_message(cid, "❌ Couldn't parse PDF markup. Please refine your request and try again.")
-        return
+        return False
 
     await send_document_bytes(
         cid,
         pdf_bytes,
-        "nepo_document.pdf",
+        _safe_pdf_filename(file_name),
         "✅ Your PDF is ready.",
         mime_type="application/pdf",
     )
+
+    return True

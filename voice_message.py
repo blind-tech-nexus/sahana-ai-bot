@@ -20,7 +20,6 @@ async def handle_voice(cid: int, voice: dict, name: str) -> None:
         await send_message(cid, "⚠️ Voice messages up to 5 minutes only.")
         return
     await send_chat_action(cid, "typing")
-    await send_message(cid, "🎙️ Processing voice...")
     voice_data = await download_telegram_file(voice["file_id"])
     if not voice_data:
         await send_message(cid, "❌ Failed to download voice message.")
@@ -32,14 +31,13 @@ async def handle_voice(cid: int, voice: dict, name: str) -> None:
         await send_message(cid, "❌ Failed to transcribe voice message.")
         return
     await save_message(cid, "user", f"[Voice] {transcription_text}")
-    await send_message(cid, f"📝 Transcribed: {transcription_text}")
 
     # Send transcribed text directly to Gemini (with function calling support)
     current_parts: list = [{"text": transcription_text}]
     file_data = await get_file_data(cid)
     has_file = False
-    if file_data and file_data.get("base64"):
-        current_parts.append({"inlineData": {"mimeType": file_data["mime_type"], "data": file_data["base64"]}})
+    if file_data and file_data.get("file_uri"):
+        current_parts.append({"fileData": {"mimeType": file_data["mime_type"], "fileUri": file_data["file_uri"]}})
         has_file = True
     await handle_gemini(
         cid,

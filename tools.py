@@ -390,3 +390,34 @@ async def open_tools_menu(cid: int) -> None:
 
 async def open_advanced_tools_menu(cid: int) -> None:
     await send_message(cid, open_advanced_tools_text(), parse_mode="HTML", reply_markup=advanced_tools_keyboard())
+
+async def run_web_search_tool(cid: int, query: str) -> None:
+    from api import web_search
+    result = await web_search(query, cid)
+    if result.get("status") != "success":
+        await send_message(cid, f"❌ Web search failed. {result.get('message', '')}", reply_markup=TOOL_BACK)
+        return
+    body = result.get("results", "")
+    sources = result.get("sources") or []
+    if sources:
+        body += "\n\nSources:\n" + "\n".join(f"- {s.get('title')}: {s.get('url')}" for s in sources)
+    await send_tool_long_text(cid, f"🔍 <b>Web Search Results</b>\n\n{body}", "web_search_results.txt", "✅ Web search completed.")
+
+async def run_image_generator_tool(cid: int, prompt: str) -> None:
+    from image_generation import execute_image
+    await execute_image(cid, prompt, "User")
+
+async def run_tts_tool(cid: int, text: str) -> None:
+    from tts import generate_tts
+    audio = await generate_tts(text)
+    if not audio:
+        await send_message(cid, "❌ Text-to-speech failed. Please try again.", reply_markup=TOOL_BACK)
+        return
+    from message import send_voice_bytes
+    await send_voice_bytes(cid, audio, None, "speech.mp3", "audio/mpeg")
+
+async def run_blog_outline(cid: int, topic: str) -> None:
+    await send_tool_long_text(cid, f"🧭 <b>Blog Outline</b>\n\n" + (await call_gemini_raw(cid, [{"text": f"Create a detailed SEO blog outline for: {topic}"}], "You are an expert content strategist. Output a clear outline only.") or "❌ Failed."), "blog_outline.txt", "✅ Blog outline created.")
+
+async def run_poem_writer(cid: int, prompt: str) -> None:
+    await send_tool_long_text(cid, f"🪶 <b>Poem</b>\n\n" + (await call_gemini_raw(cid, [{"text": f"Write a polished poem about: {prompt}"}], "You are a poet. Output only the poem.") or "❌ Failed."), "poem.txt", "✅ Poem written.")
