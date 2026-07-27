@@ -61,6 +61,7 @@ from tools import (
     run_travel_planner,
     run_business_idea_generator,
     run_story_writer,
+    run_web_search_tool, run_image_generator_tool, run_tts_tool, run_blog_outline, run_poem_writer,
     parse_text_document_bytes,
     resolve_language,
     TOOL_CANCEL,
@@ -345,6 +346,21 @@ async def webhook(request: Request):
                 elif tool_name == "story_writer":
                     await set_state(cid, "tool:story_writer")
                     await send_message(cid, "📖 <b>Story Writer</b>\n\nTell me:\n• Genre (fantasy, romance, thriller, etc.)\n• Story prompt/idea\n• Preferred length (short, medium, long)\n\n<i>I'll craft a compelling narrative.</i>", parse_mode="HTML", reply_markup=TOOL_CANCEL)
+                elif tool_name == "web_search":
+                    await set_state(cid, "tool:web_search")
+                    await send_message(cid, "🔍 <b>Web Search</b>\n\nSend the topic or query to search deeply.", parse_mode="HTML", reply_markup=TOOL_CANCEL)
+                elif tool_name == "image_generator":
+                    await set_state(cid, "tool:image_generator")
+                    await send_message(cid, "🎨 <b>Image Generator</b>\n\nDescribe the image you want.", parse_mode="HTML", reply_markup=TOOL_CANCEL)
+                elif tool_name == "tts_converter":
+                    await set_state(cid, "tool:tts_converter")
+                    await send_message(cid, "🔊 <b>Text to Speech</b>\n\nSend the text to convert into voice.", parse_mode="HTML", reply_markup=TOOL_CANCEL)
+                elif tool_name == "blog_outline":
+                    await set_state(cid, "tool:blog_outline")
+                    await send_message(cid, "🧭 <b>Blog Outline</b>\n\nSend your blog topic.", parse_mode="HTML", reply_markup=TOOL_CANCEL)
+                elif tool_name == "poem_writer":
+                    await set_state(cid, "tool:poem_writer")
+                    await send_message(cid, "🪶 <b>Poem Writer</b>\n\nSend a poem topic or prompt.", parse_mode="HTML", reply_markup=TOOL_CANCEL)
                 elif tool_name == "advanced_tools_menu":
                     await open_advanced_tools_menu(cid)
                 
@@ -412,8 +428,8 @@ async def webhook(request: Request):
                 prompt = "Describe this image in detail."
                 await save_message(cid, "user", f"[Image] {prompt}")
                 parts: list = [{"text": prompt}]
-                if fd.get("base64"):
-                    parts.append({"inlineData": {"mimeType": fd["mime_type"], "data": fd["base64"]}})
+                if fd.get("file_uri"):
+                    parts.append({"fileData": {"mimeType": fd["mime_type"], "fileUri": fd["file_uri"]}})
                 await handle_gemini(
                     cid,
                     parts,
@@ -928,6 +944,15 @@ async def webhook(request: Request):
                         return JSONResponse({"ok": True})
                     
                     # Advanced tools
+                    if st == "tool:web_search":
+                        await run_web_search_tool(cid, text)
+                        return JSONResponse({"ok": True})
+                    if st == "tool:image_generator":
+                        await run_image_generator_tool(cid, text)
+                        return JSONResponse({"ok": True})
+                    if st == "tool:tts_converter":
+                        await run_tts_tool(cid, text)
+                        return JSONResponse({"ok": True})
                     if st == "tool:code_generator":
                         await run_code_generator(cid, text)
                         return JSONResponse({"ok": True})
@@ -958,6 +983,12 @@ async def webhook(request: Request):
                     if st == "tool:story_writer":
                         await run_story_writer(cid, text)
                         return JSONResponse({"ok": True})
+                    if st == "tool:blog_outline":
+                        await run_blog_outline(cid, text)
+                        return JSONResponse({"ok": True})
+                    if st == "tool:poem_writer":
+                        await run_poem_writer(cid, text)
+                        return JSONResponse({"ok": True})
 
                 if st.startswith("awaiting_file_prompt:"):
                     await clear_state(cid)
@@ -970,8 +1001,8 @@ async def webhook(request: Request):
                     file_display = st.split(":", 1)[1] if ":" in st else "file"
                     await save_message(cid, "user", f"[File: {file_display}] {text}")
                     parts: list = [{"text": text}]
-                    if fd.get("base64"):
-                        parts.append({"inlineData": {"mimeType": fd["mime_type"], "data": fd["base64"]}})
+                    if fd.get("file_uri"):
+                        parts.append({"fileData": {"mimeType": fd["mime_type"], "fileUri": fd["file_uri"]}})
                     await handle_gemini(
                         cid,
                         parts,
@@ -1371,8 +1402,8 @@ async def webhook(request: Request):
         current_parts = [{"text": prompt_text}]
         file_data = await get_file_data(cid)
         has_file = False
-        if file_data and file_data.get("base64"):
-            current_parts.append({"inlineData": {"mimeType": file_data["mime_type"], "data": file_data["base64"]}})
+        if file_data and file_data.get("file_uri"):
+            current_parts.append({"fileData": {"mimeType": file_data["mime_type"], "fileUri": file_data["file_uri"]}})
             has_file = True
         await handle_gemini(
             cid,

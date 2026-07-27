@@ -87,7 +87,9 @@ async def save_memory(cid: int, memory: str) -> None:
     if await r.llen(mk(cid)) > 50: await r.ltrim(mk(cid), 1, -1)
 
 async def clear_memories(cid: int) -> None: await r.delete(mk(cid))
-async def get_user_voice(cid: int) -> str: return await r.get(f"settings:{cid}:voice") or "en"
+async def get_user_voice(cid: int) -> str:
+    from config import DEFAULT_TTS_VOICE
+    return await r.get(f"settings:{cid}:voice") or DEFAULT_TTS_VOICE
 async def set_user_voice(cid: int, voice: str) -> None: await r.set(f"settings:{cid}:voice", voice)
 async def get_user_system(cid: int) -> str: return await r.get(f"settings:{cid}:system") or ""
 async def set_user_system(cid: int, text: str) -> None: await r.set(f"settings:{cid}:system", text)
@@ -103,8 +105,8 @@ async def set_user_model(cid: int, model: str) -> None: await r.set(f"settings:{
 async def ensure_user(cid: int, name: str) -> None:
     if not await user_exists(cid): await save_user(cid, name)
 
-# User tool preferences stored as JSON: {"google_search": false, "code_execution": false, "url_understanding": false}
-DEFAULT_USER_TOOLS = {"google_search": False, "code_execution": False, "url_understanding": False}
+# User tool preferences stored as JSON. Web search is available by default.
+DEFAULT_USER_TOOLS = {"web_search": True}
 
 async def get_user_tools(cid: int) -> dict:
     val = await r.get(f"settings:{cid}:tools")

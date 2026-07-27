@@ -154,7 +154,8 @@ def tools_keyboard() -> dict:
     return ikb([
         [btn("✨ Text Refiner", "tool:text_refiner"), btn("🌐 Text Translator", "tool:text_translator")],
         [btn("📊 Text Analyzer", "tool:text_analyzer"), btn("📄 PDF Creator", "tool:pdf_creator")],
-        [btn("🎙️ Audio Transcriber", "tool:audio_transcriber")],
+        [btn("🎙️ Audio Transcriber", "tool:audio_transcriber"), btn("🔊 Text to Speech", "tool:tts_converter")],
+        [btn("🔍 Web Search", "tool:web_search"), btn("🎨 Image Generator", "tool:image_generator")],
         [btn("🚀 Advanced Tools", "advanced_tools_menu")],
         [btn("❌ Close", "tools_close")],
     ])
@@ -167,24 +168,16 @@ def advanced_tools_keyboard() -> dict:
         [btn("📚 Study Notes", "tool:study_notes"), btn("🍳 Recipe Creator", "tool:recipe_creator")],
         [btn("💪 Fitness Plan", "tool:fitness_plan"), btn("✈️ Travel Planner", "tool:travel_planner")],
         [btn("💡 Business Ideas", "tool:business_idea_generator"), btn("📖 Story Writer", "tool:story_writer")],
+        [btn("🧭 Blog Outline", "tool:blog_outline"), btn("🪶 Poem Writer", "tool:poem_writer")],
         [btn("🔙 Back to Core Tools", "open_tools")],
         [btn("❌ Close", "tools_close")],
     ])
 
 def preferences_keyboard(tools_config: dict) -> dict:
-    """Generate keyboard for user tool preferences.
-    
-    Args:
-        tools_config: Dict with keys 'google_search', 'code_execution', 'url_understanding' (bool values)
-    """
-    gs_status = "✅ ON" if tools_config.get("google_search", False) else "❌ OFF"
-    ce_status = "✅ ON" if tools_config.get("code_execution", False) else "❌ OFF"
-    uu_status = "✅ ON" if tools_config.get("url_understanding", False) else "❌ OFF"
-    
+    """Generate keyboard for user tool preferences."""
+    ws_status = "✅ ON" if tools_config.get("web_search", True) else "❌ OFF"
     return ikb([
-        [btn(f"🔍 Google Search {gs_status}", "pref_toggle_google_search")],
-        [btn(f"💻 Code Execution {ce_status}", "pref_toggle_code_execution")],
-        [btn(f"🌐 URL Understanding {uu_status}", "pref_toggle_url_understanding")],
+        [btn(f"🔍 Web Search {ws_status}", "pref_toggle_web_search")],
         [btn("🔙 Back", "back_settings")],
     ])
 

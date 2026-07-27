@@ -1,20 +1,19 @@
-import base64
 from database import save_message, save_file_data, set_state, ensure_user
 from message import send_message, send_chat_action, download_telegram_file, get_telegram_file_info
 from upload import detect_mime_type, get_display_name, is_gemini_supported_mime
+from gemini_files import upload_file_bytes, file_part
 from api import handle_gemini
 from system import get_system_text
 from settings import photo_keyboard, file_prompt_keyboard
 from markdown_parse import escape_html
 
 
-def _inline_part(mime: str, file_bytes: bytes) -> dict:
-    return {'inlineData': {'mimeType': mime, 'data': base64.b64encode(file_bytes).decode('utf-8')}}
-
-
 async def _store_and_prompt(cid: int, file_name: str, mime: str, file_bytes: bytes, label: str) -> None:
-    encoded = base64.b64encode(file_bytes).decode('utf-8')
-    await save_file_data(cid, {'mime_type': mime, 'display_name': file_name, 'base64': encoded})
+    uploaded, error = await upload_file_bytes(file_bytes, mime, file_name)
+    if not uploaded:
+        await send_message(cid, f'❌ Failed to upload attachment to Gemini Files API. {escape_html(error or '')}', parse_mode='HTML')
+        return
+    await save_file_data(cid, {'mime_type': mime, 'display_name': file_name, 'file_uri': uploaded.get('uri'), 'file_name': uploaded.get('name')})
     await set_state(cid, f'awaiting_file_prompt:{file_name}')
     await send_message(
         cid,
@@ -40,7 +39,11 @@ async def _process_non_image(cid: int, name: str, file_name: str, mime: str, fil
 
     if caption:
         await save_message(cid, 'user', f'[{tag}: {file_name}] {caption}')
-        parts: list = [{'text': caption}, _inline_part(mime, file_bytes)]
+        uploaded, error = await upload_file_bytes(file_bytes, mime, file_name)
+        if not uploaded:
+            await send_message(cid, f'❌ Failed to upload attachment to Gemini Files API. {escape_html(error or '')}', parse_mode='HTML')
+            return
+        parts: list = [{'text': caption}, file_part(uploaded, mime)]
         await handle_gemini(cid, parts, await get_system_text(name, cid), use_tools=False)
         return
     await _store_and_prompt(cid, file_name, mime, file_bytes, upload_label)
@@ -51,7 +54,6 @@ async def handle_photo(cid: int, message: dict, name: str) -> None:
     best_photo = message['photo'][-1]
     caption = message.get('caption', '').strip()
     await send_chat_action(cid, 'typing')
-    await send_message(cid, '🖼️ Processing image...')
     file_info = await get_telegram_file_info(best_photo['file_id'])
     if not file_info:
         await send_message(cid, '❌ Failed to get image info.')
@@ -63,11 +65,14 @@ async def handle_photo(cid: int, message: dict, name: str) -> None:
     file_path = file_info.get('file_path', 'photo.jpg')
     display = get_display_name(file_path, 'photo.jpg')
     mime = detect_mime_type(file_path, 'image/jpeg')
-    encoded = base64.b64encode(file_bytes).decode('utf-8')
-    await save_file_data(cid, {'mime_type': mime, 'display_name': display, 'base64': encoded})
+    uploaded, error = await upload_file_bytes(file_bytes, mime, display)
+    if not uploaded:
+        await send_message(cid, f'❌ Failed to upload image to Gemini Files API. {escape_html(error or '')}', parse_mode='HTML')
+        return
+    await save_file_data(cid, {'mime_type': mime, 'display_name': display, 'file_uri': uploaded.get('uri'), 'file_name': uploaded.get('name')})
     if caption:
         await save_message(cid, 'user', f'[Image: {display}] {caption}')
-        parts: list = [{'text': caption}, {'inlineData': {'mimeType': mime, 'data': encoded}}]
+        parts: list = [{'text': caption}, file_part(uploaded, mime)]
         await handle_gemini(cid, parts, await get_system_text(name, cid), use_tools=False)
         return
     await send_message(cid, f'✅ Image ready: <b>{escape_html(display)}</b>\n\nType your prompt or tap Describe.', parse_mode='HTML', reply_markup=photo_keyboard())
@@ -162,8 +167,11 @@ async def handle_sticker(cid: int, message: dict, name: str) -> None:
     if not file_bytes:
         await send_message(cid, '❌ Failed to download sticker.')
         return
-    encoded = base64.b64encode(file_bytes).decode('utf-8')
-    await save_file_data(cid, {'mime_type': 'image/webp', 'display_name': 'sticker.webp', 'base64': encoded})
+    uploaded, error = await upload_file_bytes(file_bytes, 'image/webp', 'sticker.webp')
+    if not uploaded:
+        await send_message(cid, f'❌ Failed to upload sticker to Gemini Files API. {escape_html(error or '')}', parse_mode='HTML')
+        return
+    await save_file_data(cid, {'mime_type': 'image/webp', 'display_name': 'sticker.webp', 'file_uri': uploaded.get('uri'), 'file_name': uploaded.get('name')})
     await save_message(cid, 'user', '[Sticker] Describe this sticker')
-    parts: list = [{'text': 'Describe this sticker and react to it naturally.'}, {'inlineData': {'mimeType': 'image/webp', 'data': encoded}}]
+    parts: list = [{'text': 'Describe this sticker and react to it naturally.'}, file_part(uploaded, 'image/webp')]
     await handle_gemini(cid, parts, await get_system_text(name, cid), use_tools=False)
