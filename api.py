@@ -44,13 +44,16 @@ def _normalize_part_keys(part: dict) -> dict:
     def _compact(data: dict) -> dict: return {k: v for k, v in data.items() if v not in ("", None)}
     if "fileData" in part and isinstance(part["fileData"], dict):
         fd = part["fileData"]
-        return {"fileData": _compact({"mimeType": normalize_mime_type(fd.get("mimeType") or fd.get("mime_type")), "fileUri": fd.get("fileUri") or fd.get("uri")})}
+        return {"file_data": _compact({"mime_type": normalize_mime_type(fd.get("mimeType") or fd.get("mime_type")), "file_uri": fd.get("fileUri") or fd.get("uri") or fd.get("file_uri")})}
+    if "file_data" in part and isinstance(part["file_data"], dict):
+        fd = part["file_data"]
+        return {"file_data": _compact({"mime_type": normalize_mime_type(fd.get("mime_type") or fd.get("mimeType")), "file_uri": fd.get("file_uri") or fd.get("uri") or fd.get("fileUri")})}
     if "inlineData" in part and isinstance(part["inlineData"], dict):
         ind = part["inlineData"]
-        return {"inlineData": _compact({"mimeType": normalize_mime_type(ind.get("mimeType")), "data": ind.get("data")})}
+        return {"inline_data": _compact({"mime_type": normalize_mime_type(ind.get("mimeType") or ind.get("mime_type")), "data": ind.get("data")})}
     if "inline_data" in part and isinstance(part["inline_data"], dict):
         ind = part["inline_data"]
-        return {"inlineData": _compact({"mimeType": normalize_mime_type(ind.get("mime_type") or ind.get("mimeType")), "data": ind.get("data")})}
+        return {"inline_data": _compact({"mime_type": normalize_mime_type(ind.get("mime_type") or ind.get("mimeType")), "data": ind.get("data")})}
     if "text" in part:
         text_val = (part.get("text") or "").strip()
         return {"text": text_val} if text_val else {}
