@@ -40,20 +40,36 @@ def normalize_mime_type(mime: str) -> str:
     if mime.startswith("text/") or "javascript" in mime or "json" in mime or "xml" in mime: return "text/plain"
     return "application/octet-stream"
 
+_FILE_DATA_KEYS = ("file_data", "fileData")
+_INLINE_DATA_KEYS = ("inline_data", "inlineData")
+_MIME_KEYS = ("mime_type", "mimeType")
+_URI_KEYS = ("file_uri", "fileUri", "uri")
+
+def _first_value(data: dict, keys: tuple[str, ...]):
+    for key in keys:
+        value = data.get(key)
+        if value not in ("", None):
+            return value
+    return None
+
 def _normalize_part_keys(part: dict) -> dict:
-    def _compact(data: dict) -> dict: return {k: v for k, v in data.items() if v not in ("", None)}
-    if "fileData" in part and isinstance(part["fileData"], dict):
-        fd = part["fileData"]
-        return {"file_data": _compact({"mime_type": normalize_mime_type(fd.get("mimeType") or fd.get("mime_type")), "file_uri": fd.get("fileUri") or fd.get("uri") or fd.get("file_uri")})}
-    if "file_data" in part and isinstance(part["file_data"], dict):
-        fd = part["file_data"]
-        return {"file_data": _compact({"mime_type": normalize_mime_type(fd.get("mime_type") or fd.get("mimeType")), "file_uri": fd.get("file_uri") or fd.get("uri") or fd.get("fileUri")})}
-    if "inlineData" in part and isinstance(part["inlineData"], dict):
-        ind = part["inlineData"]
-        return {"inline_data": _compact({"mime_type": normalize_mime_type(ind.get("mimeType") or ind.get("mime_type")), "data": ind.get("data")})}
-    if "inline_data" in part and isinstance(part["inline_data"], dict):
-        ind = part["inline_data"]
-        return {"inline_data": _compact({"mime_type": normalize_mime_type(ind.get("mime_type") or ind.get("mimeType")), "data": ind.get("data")})}
+    """Map a single content part strictly onto the snake_case Gemini REST schema.
+
+    Gemini's REST API only accepts snake_case keys (``file_data``/``file_uri``/
+    ``mime_type``/``inline_data``) for these payload parts, so any camelCase
+    aliases coming from callers or from Files API responses are converted here.
+    """
+    if not isinstance(part, dict): return {}
+    file_data = _first_value(part, _FILE_DATA_KEYS)
+    if isinstance(file_data, dict):
+        file_uri = _first_value(file_data, _URI_KEYS)
+        if not file_uri: return {}
+        return {"file_data": {"mime_type": normalize_mime_type(_first_value(file_data, _MIME_KEYS) or ""), "file_uri": file_uri}}
+    inline_data = _first_value(part, _INLINE_DATA_KEYS)
+    if isinstance(inline_data, dict):
+        raw = inline_data.get("data")
+        if not raw: return {}
+        return {"inline_data": {"mime_type": normalize_mime_type(_first_value(inline_data, _MIME_KEYS) or ""), "data": raw}}
     if "text" in part:
         text_val = (part.get("text") or "").strip()
         return {"text": text_val} if text_val else {}
@@ -74,6 +90,11 @@ async def try_api_call(body_json: str, model: str) -> tuple[Optional[str], Optio
                 resp = await client.post(url, content=body_json, headers={"Content-Type":"application/json"})
                 if resp.status_code == 200: return resp.text, None
                 last_error = f"Status {resp.status_code}: {resp.text}"; logger.warning("Gemini key index %s failed: %s", key_idx, last_error)
+                if resp.status_code == 400:
+                    # A 400 Bad Request means the payload itself is invalid, so
+                    # rotating to another key would repeat the same failure.
+                    logger.error("Gemini rejected the request payload (400), aborting key rotation: %s", resp.text)
+                    return None, last_error
                 if resp.status_code == 429 or resp.status_code >= 500: await asyncio.sleep(0.5)
             except Exception as exc:
                 last_error = str(exc); logger.warning("Gemini key index %s exception: %s", key_idx, exc); await asyncio.sleep(0.5)
@@ -209,13 +230,29 @@ async def _send_function_response(cid: int, model: str, body: dict, function_cal
     if more: return await _send_function_response(cid, model, follow_up, more, user_name, depth+1)
     return extract_ai_text(content)
 
-async def call_gemini_raw(cid: int, parts: list, system_text: str, model_override: str | None = None) -> Optional[str]:
+async def call_gemini_raw_with_error(cid: int, parts: list, system_text: str, model_override: str | None = None) -> tuple[Optional[str], Optional[str]]:
+    """Call Gemini and return ``(text, error)`` so HTTP failures stay visible.
+
+    Unlike :func:`call_gemini_raw`, the exact upstream error (status code and
+    response body) is propagated to the caller instead of being collapsed into
+    a bare ``None``.
+    """
     model = model_override or await get_gemini_model(cid)
-    body={"systemInstruction":{"parts":[{"text":system_text}]},"contents":[{"role":"user","parts":_normalize_parts(parts)}],"generationConfig":{"maxOutputTokens":MAX_OUTPUT_TOKENS,"temperature":0.4}}
-    content, _ = await try_api_call(json.dumps(body), model)
-    if not content: return None
+    normalized = _normalize_parts(parts)
+    if not normalized: return None, "No valid content parts to send to Gemini"
+    body={"systemInstruction":{"parts":[{"text":system_text}]},"contents":[{"role":"user","parts":normalized}],"generationConfig":{"maxOutputTokens":MAX_OUTPUT_TOKENS,"temperature":0.4}}
+    content, err = await try_api_call(json.dumps(body), model)
+    if not content:
+        logger.error("call_gemini_raw_with_error failed model=%s error=%s", model, err)
+        return None, err or "Gemini request failed with an unknown error"
     text, _ = extract_ai_text(content)
-    return None if text in ("No response received from AI.", "Failed to parse AI response.") else text
+    if text in ("No response received from AI.", "Failed to parse AI response."):
+        return None, text
+    return text, None
+
+async def call_gemini_raw(cid: int, parts: list, system_text: str, model_override: str | None = None) -> Optional[str]:
+    text, _ = await call_gemini_raw_with_error(cid, parts, system_text, model_override)
+    return text
 
 async def handle_gemini(cid: int, current_parts: list, system_text: str, use_tools: bool = True, use_functions: bool = True, user_name: str = "User") -> Optional[str]:
     model=await get_gemini_model(cid); history=await get_recent_history(cid, CONTEXT_SIZE); user_tools=await get_user_tools(cid)

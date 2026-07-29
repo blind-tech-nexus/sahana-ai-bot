@@ -4,12 +4,14 @@ from typing import Optional
 
 import httpx
 
-from api import call_gemini_raw, normalize_mime_type
+from api import call_gemini_raw_with_error, normalize_mime_type
 from api_keys import KeyRotator, fetch_api_keys, get_next_key_index
 
 logger = logging.getLogger("mero.gemini_files")
 TRANSCRIBE_PROMPT = "Transcribe the uploaded audio exactly in its original language. Do not summarize. Do not translate. Return only the transcript text."
 UPLOAD_URL = "https://generativelanguage.googleapis.com/upload/v1beta/files"
+# All transcriptions are pinned to this model regardless of the user's chosen model.
+TRANSCRIBE_MODEL = "gemini-2.5-flash"
 
 async def _upload_with_key(client: httpx.AsyncClient, key: str, file_bytes: bytes, mime_type: str, display_name: str) -> dict:
     start_headers = {
@@ -25,6 +27,10 @@ async def _upload_with_key(client: httpx.AsyncClient, key: str, file_bytes: byte
     upload_url = start.headers.get("x-goog-upload-url")
     if not upload_url:
         raise RuntimeError("Gemini Files API did not return an upload URL")
+    # No explicit Content-Type here: the resumable upload declares the media
+    # type up-front via X-Goog-Upload-Header-Content-Type, and sending a second
+    # conflicting Content-Type on the "upload, finalize" step makes the Files
+    # API reject the request with 400 Bad Request.
     upload_headers = {
         "Content-Length": str(len(file_bytes)),
         "X-Goog-Upload-Offset": "0",
@@ -53,6 +59,20 @@ async def upload_file_bytes(file_bytes: bytes, mime_type: str, display_name: str
                 if file_obj.get("uri"):
                     return file_obj, None
                 last_error = f"Upload response missing file URI: {file_obj}"
+            except httpx.HTTPStatusError as exc:
+                body = ""
+                try:
+                    body = exc.response.text
+                except Exception:
+                    pass
+                last_error = f"Status {exc.response.status_code}: {body}".strip()
+                logger.warning("Gemini file upload failed with key index %s: %s", idx, last_error)
+                if exc.response.status_code == 400:
+                    # The request itself is malformed/rejected; another key will
+                    # produce the identical 400, so stop rotating immediately.
+                    logger.error("Gemini Files API rejected the upload (400), aborting key rotation: %s", body)
+                    return None, last_error
+                await asyncio.sleep(0.2)
             except Exception as exc:
                 last_error = str(exc)
                 logger.warning("Gemini file upload failed with key index %s: %s", idx, exc)
@@ -60,14 +80,30 @@ async def upload_file_bytes(file_bytes: bytes, mime_type: str, display_name: str
     return None, f"All API keys exhausted for file upload. Tried key indexes: {tried}. Last error: {last_error or 'unknown'}"
 
 def file_part(file_obj: dict, fallback_mime: str) -> dict:
-    return {"file_data": {"mime_type": normalize_mime_type(file_obj.get("mimeType") or file_obj.get("mime_type") or fallback_mime), "file_uri": file_obj.get("uri") or file_obj.get("fileUri")}}
+    """Build a strictly snake_case ``file_data`` part for the Gemini REST API."""
+    return {
+        "file_data": {
+            "mime_type": normalize_mime_type(file_obj.get("mime_type") or file_obj.get("mimeType") or fallback_mime),
+            "file_uri": file_obj.get("file_uri") or file_obj.get("uri") or file_obj.get("fileUri"),
+        }
+    }
 
 async def transcribe_audio_inline(audio_bytes: bytes, mime_type: str, chat_id: int) -> tuple[str | None, str | None]:
     mime_type = normalize_mime_type(mime_type)
     uploaded, error = await upload_file_bytes(audio_bytes, mime_type, "voice_audio")
     if not uploaded:
+        logger.error("Gemini Files API upload failed: %s", error)
         return None, error or "Gemini Files API upload failed"
-    text = await call_gemini_raw(chat_id, [file_part(uploaded, mime_type), {"text": TRANSCRIBE_PROMPT}], "You are an audio transcriber.")
+    part = file_part(uploaded, mime_type)
+    if not part["file_data"].get("file_uri"):
+        return None, f"Gemini Files API upload returned no file URI: {uploaded}"
+    text, call_error = await call_gemini_raw_with_error(
+        chat_id,
+        [part, {"text": TRANSCRIBE_PROMPT}],
+        "You are an audio transcriber.",
+        model_override=TRANSCRIBE_MODEL,
+    )
     if not text:
-        return None, "Empty transcription result or failed to parse"
+        logger.error("Gemini transcription failed: %s", call_error)
+        return None, call_error or "Empty transcription result or failed to parse"
     return text.strip(), None
