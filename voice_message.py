@@ -36,9 +36,14 @@ async def handle_voice(cid: int, voice: dict, name: str) -> None:
     current_parts: list = [{"text": transcription_text}]
     file_data = await get_file_data(cid)
     has_file = False
-    if file_data and file_data.get("file_uri"):
-        current_parts.append({"file_data": {"mime_type": file_data["mime_type"], "file_uri": file_data["file_uri"]}})
-        has_file = True
+    if file_data:
+        # Gemini's REST API only accepts snake_case part keys, so read through
+        # any camelCase aliases and emit strict snake_case here.
+        file_uri = file_data.get("file_uri") or file_data.get("fileUri") or file_data.get("uri")
+        if file_uri:
+            file_mime = file_data.get("mime_type") or file_data.get("mimeType") or "application/octet-stream"
+            current_parts.append({"file_data": {"mime_type": file_mime, "file_uri": file_uri}})
+            has_file = True
     await handle_gemini(
         cid,
         current_parts,
