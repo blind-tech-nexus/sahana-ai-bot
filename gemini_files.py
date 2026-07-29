@@ -29,7 +29,6 @@ async def _upload_with_key(client: httpx.AsyncClient, key: str, file_bytes: byte
         "Content-Length": str(len(file_bytes)),
         "X-Goog-Upload-Offset": "0",
         "X-Goog-Upload-Command": "upload, finalize",
-        "Content-Type": mime_type,
     }
     final = await client.post(upload_url, headers=upload_headers, content=file_bytes)
     final.raise_for_status()
@@ -61,7 +60,7 @@ async def upload_file_bytes(file_bytes: bytes, mime_type: str, display_name: str
     return None, f"All API keys exhausted for file upload. Tried key indexes: {tried}. Last error: {last_error or 'unknown'}"
 
 def file_part(file_obj: dict, fallback_mime: str) -> dict:
-    return {"fileData": {"mimeType": normalize_mime_type(file_obj.get("mimeType") or file_obj.get("mime_type") or fallback_mime), "fileUri": file_obj.get("uri") or file_obj.get("fileUri")}}
+    return {"file_data": {"mime_type": normalize_mime_type(file_obj.get("mimeType") or file_obj.get("mime_type") or fallback_mime), "file_uri": file_obj.get("uri") or file_obj.get("fileUri")}}
 
 async def transcribe_audio_inline(audio_bytes: bytes, mime_type: str, chat_id: int) -> tuple[str | None, str | None]:
     mime_type = normalize_mime_type(mime_type)
