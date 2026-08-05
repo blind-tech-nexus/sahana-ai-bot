@@ -38,9 +38,13 @@ async def handle_voice(cid: int, voice: dict, name: str) -> None:
     current_parts: list = [{"text": transcription_text}]
     file_data = get_file_data(cid)
     has_file = False
-    if file_data and file_data.get("base64"):
-        current_parts.append({"inlineData": {"mimeType": file_data["mime_type"], "data": file_data["base64"]}})
-        has_file = True
+    if file_data:
+        if file_data.get("file_uri"):
+            current_parts.append({"fileUri": file_data["file_uri"], "mimeType": file_data.get("mime_type", "application/octet-stream")})
+            has_file = True
+        elif file_data.get("base64"):
+            current_parts.append({"inlineData": {"mimeType": file_data["mime_type"], "data": file_data["base64"]}})
+            has_file = True
     await handle_gemini(
         cid,
         current_parts,

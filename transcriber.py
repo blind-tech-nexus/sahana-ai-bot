@@ -1,9 +1,10 @@
 from typing import Optional
 
-from gemini_files import transcribe_audio_inline
+from gemini_files import transcribe_audio_inline, transcribe_audio_file_api
+from api import MAX_INLINE_FILE_BYTES
 from message import download_telegram_file, send_document_bytes, send_message
 
-MAX_AUDIO_BYTES = 20 * 1024 * 1024  # 20MB limit for inline data
+MAX_AUDIO_BYTES = 20 * 1024 * 1024  # 20MB limit for Telegram file download
 
 
 async def transcribe_audio_bytes(
@@ -12,8 +13,16 @@ async def transcribe_audio_bytes(
     display_name: str = "audio",
     chat_id: Optional[int] = None,
 ) -> tuple[Optional[str], Optional[str]]:
-    """Transcribe audio bytes using Gemini inline_data approach."""
+    """Transcribe audio bytes using Gemini.
+
+    Uses the Files API for files larger than MAX_INLINE_FILE_BYTES (2MB),
+    which is the recommended approach per Gemini API best practices.
+    """
     cid = chat_id if chat_id is not None else 0
+
+    if len(audio_bytes) > MAX_INLINE_FILE_BYTES:
+        return await transcribe_audio_file_api(audio_bytes, mime_type, display_name, chat_id=cid)
+
     return await transcribe_audio_inline(
         audio_bytes,
         mime_type,

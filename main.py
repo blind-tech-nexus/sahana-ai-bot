@@ -359,7 +359,9 @@ async def webhook(request: Request):
                 prompt = "Describe this image in detail."
                 save_message(cid, "user", f"[Image] {prompt}")
                 parts: list = [{"text": prompt}]
-                if fd.get("base64"):
+                if fd.get("file_uri"):
+                    parts.append({"fileUri": fd["file_uri"], "mimeType": fd.get("mime_type", "application/octet-stream")})
+                elif fd.get("base64"):
                     parts.append({"inlineData": {"mimeType": fd["mime_type"], "data": fd["base64"]}})
                 await handle_gemini(
                     cid,
@@ -825,7 +827,9 @@ async def webhook(request: Request):
                     file_display = st.split(":", 1)[1] if ":" in st else "file"
                     save_message(cid, "user", f"[File: {file_display}] {text}")
                     parts: list = [{"text": text}]
-                    if fd.get("base64"):
+                    if fd.get("file_uri"):
+                        parts.append({"fileUri": fd["file_uri"], "mimeType": fd.get("mime_type", "application/octet-stream")})
+                    elif fd.get("base64"):
                         parts.append({"inlineData": {"mimeType": fd["mime_type"], "data": fd["base64"]}})
                     await handle_gemini(
                         cid,
@@ -1220,9 +1224,13 @@ async def webhook(request: Request):
         current_parts = [{"text": prompt_text}]
         file_data = get_file_data(cid)
         has_file = False
-        if file_data and file_data.get("base64"):
-            current_parts.append({"inlineData": {"mimeType": file_data["mime_type"], "data": file_data["base64"]}})
-            has_file = True
+        if file_data:
+            if file_data.get("file_uri"):
+                current_parts.append({"fileUri": file_data["file_uri"], "mimeType": file_data.get("mime_type", "application/octet-stream")})
+                has_file = True
+            elif file_data.get("base64"):
+                current_parts.append({"inlineData": {"mimeType": file_data["mime_type"], "data": file_data["base64"]}})
+                has_file = True
         await handle_gemini(
             cid,
             current_parts,

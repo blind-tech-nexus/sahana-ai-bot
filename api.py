@@ -1,17 +1,25 @@
 import json
 import base64
 import logging
-import httpx
+import time
+import random
 import asyncio
+import httpx
 from typing import Optional
 from config import CONTEXT_SIZE, MODEL_LITE, MODEL_SMART
-from api_keys import fetch_api_keys, get_next_key_index, KeyRotator
+from api_keys import (
+    fetch_api_keys, get_next_key_index, KeyRotator,
+    is_key_on_cooldown, mark_key_error, clear_key_error,
+    is_retriable_error, get_retry_after, compute_backoff_delay,
+    get_rate_limiter,
+)
 from database import get_recent_history, save_message, get_user_temp, save_memory, get_user_model
 from markdown_parse import markdown_to_html, escape_html
 from message import send_message, send_chat_action
 
 logger = logging.getLogger("mero.api")
 MAX_OUTPUT_TOKENS = 64000
+MAX_INLINE_FILE_BYTES = 2 * 1024 * 1024  # 2MB threshold for Files API
 
 FUNCTION_DECLARATIONS = [
     {
@@ -71,34 +79,254 @@ def _normalize_parts(parts: list) -> list:
             normalized.append(candidate if candidate else part)
     return normalized
 
+
+async def upload_file_to_gemini(
+    file_bytes: bytes,
+    mime_type: str,
+    display_name: str = "file",
+) -> Optional[str]:
+    """Upload a file to the Gemini Files API and return the file URI.
+
+    Uses the Files API for files larger than MAX_INLINE_FILE_BYTES (2MB).
+    Files are automatically deleted after 48 hours.
+    Returns the file URI (e.g., 'files/abc-123') or None on failure.
+    """
+    from api_keys import api_keys as _all_keys, get_next_key_index
+
+    if not await fetch_api_keys():
+        return None
+
+    key_idx = await get_next_key_index()
+    keys = _all_keys
+    if not keys:
+        return None
+
+    mime_type = normalize_mime_type(mime_type)
+    file_size = len(file_bytes)
+
+    async with httpx.AsyncClient(timeout=120.0) as client:
+        for attempt in range(min(3, len(keys))):
+            key = keys[(key_idx + attempt) % len(keys)]
+            upload_url = (
+                "https://generativelanguage.googleapis.com/upload/v1beta/files"
+                f"?key={key}&uploadType=resumable"
+            )
+            metadata = {
+                "file": {
+                    "display_name": display_name[:100],
+                    "mime_type": mime_type,
+                }
+            }
+            headers = {
+                "Content-Type": "application/json; charset=utf-8",
+                "X-Goog-Upload-File-Size": str(file_size),
+                "X-Goog-Upload-Protocol": "resumable",
+            }
+            try:
+                init_resp = await client.post(
+                    upload_url,
+                    content=json.dumps(metadata),
+                    headers=headers,
+                    timeout=30.0,
+                )
+                if init_resp.status_code != 200 and init_resp.status_code != 201:
+                    if init_resp.status_code == 429:
+                        mark_key_error(key)
+                        delay = compute_backoff_delay(attempt, max_delay=15.0, jitter=True)
+                        await asyncio.sleep(delay)
+                        continue
+                    logger.warning(
+                        f"File upload init failed: {init_resp.status_code} {init_resp.text[:300]}"
+                    )
+                    continue
+
+                upload_url_final = init_resp.headers.get("Location") or init_resp.headers.get("location")
+                if not upload_url_final:
+                    logger.warning("File upload: no upload URL returned")
+                    continue
+
+                upload_headers = {
+                    "Content-Type": mime_type,
+                    "X-Goog-Upload-File-Size": str(file_size),
+                    "X-Goog-Upload-Protocol": "resumable",
+                    "X-Goog-Upload-Command": "upload, finalize",
+                    "X-Goog-Upload-Offset": "0",
+                }
+                upload_resp = await client.post(
+                    upload_url_final,
+                    content=file_bytes,
+                    headers=upload_headers,
+                    timeout=120.0,
+                )
+
+                if upload_resp.status_code in (200, 201):
+                    resp_data = upload_resp.json()
+                    name = resp_data.get("name") or resp_data.get("file", {}).get("name")
+                    if name:
+                        return name
+                    logger.warning(f"Upload returned no file name: {str(resp_data)[:300]}")
+                else:
+                    logger.warning(
+                        f"File upload content failed: {upload_resp.status_code} {upload_resp.text[:300]}"
+                    )
+            except Exception as exc:
+                logger.warning(f"File upload exception: {exc}")
+
+    return None
+
+
+async def upload_file_with_retry(
+    file_bytes: bytes,
+    mime_type: str,
+    display_name: str = "file",
+) -> Optional[str]:
+    """Upload a file to Gemini Files API with retry logic.
+
+    Returns the file URI or None on failure.
+    """
+    max_upload_retries = 3
+    for attempt in range(max_upload_retries):
+        result = await upload_file_to_gemini(file_bytes, mime_type, display_name)
+        if result:
+            return result
+        if attempt < max_upload_retries - 1:
+            delay = compute_backoff_delay(attempt, max_delay=10.0, jitter=True)
+            await asyncio.sleep(delay)
+    return None
+
+
+async def delete_gemini_file(file_uri: str) -> bool:
+    """Delete a file from the Gemini Files API.
+
+    file_uri should be like 'files/abc-123'.
+    """
+    from api_keys import api_keys as _all_keys, get_next_key_index
+
+    if not await fetch_api_keys():
+        return False
+
+    key = None
+    idx = await get_next_key_index()
+    keys = _all_keys
+    if keys:
+        key = keys[idx % len(keys)]
+
+    if not key:
+        return False
+
+    url = f"https://generativelanguage.googleapis.com/v1beta/{file_uri}?key={key}"
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            resp = await client.delete(url)
+            return resp.status_code == 200
+    except Exception as exc:
+        logger.warning(f"Failed to delete Gemini file {file_uri}: {exc}")
+        return False
+
+
+
 async def try_api_call(body_json: str, model: str) -> tuple[Optional[str], Optional[str]]:
-    if not await fetch_api_keys(): return None, "No API keys available"
+    if not await fetch_api_keys():
+        return None, "No API keys available"
     start_idx = await get_next_key_index()
-    rotator = KeyRotator(start_idx)
+    from api_keys import api_keys as _all_keys
+    rotator = KeyRotator(start_idx, _all_keys)
     last_error = None
-    async with httpx.AsyncClient(timeout=120.0, limits=httpx.Limits(max_connections=500, max_keepalive_connections=100)) as client:
-        while True:
+
+    if not rotator.available_count:
+        return None, "All API keys are on cooldown (rate limited)"
+
+    limiter = get_rate_limiter()
+    async with httpx.AsyncClient(
+        timeout=120.0,
+        limits=httpx.Limits(max_connections=500, max_keepalive_connections=100),
+    ) as client:
+        attempt = 0
+        max_retries = min(6, max(3, rotator.available_count))
+
+        while attempt < max_retries:
+            if not await limiter.acquire("gemini_api", timeout=30.0):
+                last_error = "Rate limiter timeout waiting to acquire token"
+                logger.warning(last_error)
+                return None, last_error
+
             key = rotator.get_next_key()
-            if key is None: break
+            if key is None:
+                if last_error is None:
+                    last_error = "All API keys exhausted"
+                break
+
             url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={key}"
             try:
-                resp = await client.post(url, content=body_json, headers={"Content-Type": "application/json"})
-                if resp.status_code == 200: return resp.text, None
+                resp = await client.post(
+                    url,
+                    content=body_json,
+                    headers={"Content-Type": "application/json"},
+                )
+                if resp.status_code == 200:
+                    clear_key_error(key)
+                    return resp.text, None
+
                 error_text = resp.text
-                logger.warning(f"API call failed with status {resp.status_code}: {error_text}")
+                logger.warning(
+                    f"API call failed with status {resp.status_code}: {error_text[:500]}"
+                )
+
                 if resp.status_code == 429:
-                    await asyncio.sleep(0.5)
-                    last_error = f"Status 429: Rate limit"
-                    continue
+                    retry_after = get_retry_after(resp)
+                    mark_key_error(key)
+
+                    if attempt < max_retries - 1:
+                        if retry_after > 0:
+                            base_delay = retry_after
+                        else:
+                            base_delay = compute_backoff_delay(attempt, max_delay=30.0, jitter=True)
+
+                        logger.info(
+                            f"429 on key index {start_idx + rotator.tried_count - 1}, "
+                            f"retrying in {base_delay:.1f}s (attempt {attempt + 1}/{max_retries})"
+                        )
+                        await asyncio.sleep(base_delay)
+                        attempt += 1
+                        continue
+                    last_error = f"Status 429: Rate limit exhausted after retries"
+                    break
+
                 if resp.status_code >= 500:
-                    await asyncio.sleep(1.0)
+                    if attempt < max_retries - 1:
+                        delay = compute_backoff_delay(attempt, max_delay=15.0, jitter=True)
+                        await asyncio.sleep(delay)
+                        attempt += 1
+                        continue
                     last_error = f"Status {resp.status_code}: Server error"
+                    break
+
+                if resp.status_code in (400, 401, 403):
+                    last_error = f"Status {resp.status_code}: {error_text}"
+                    break
+
+                last_error = f"Status {resp.status_code}: {error_text}"
+                break
+
+            except httpx.TimeoutException:
+                last_error = "Request timed out"
+                logger.warning(f"Timeout on API call (attempt {attempt + 1})")
+                if attempt < max_retries - 1:
+                    delay = compute_backoff_delay(attempt, max_delay=10.0, jitter=True)
+                    await asyncio.sleep(delay)
+                    attempt += 1
                     continue
-                return None, f"Status {resp.status_code}: {error_text}"
+                break
             except Exception as exc:
-                logger.warning(f"API call exception: {exc}")
                 last_error = str(exc)
-                await asyncio.sleep(1.0)
+                logger.warning(f"API call exception: {exc}")
+                if attempt < max_retries - 1:
+                    delay = compute_backoff_delay(attempt, max_delay=10.0, jitter=True)
+                    await asyncio.sleep(delay)
+                    attempt += 1
+                    continue
+                break
+
     return None, last_error or "All keys exhausted"
 
 def build_body(history_messages: list[dict], current_parts: list, system_text: str, use_tools: bool = True, use_functions: bool = True) -> dict:
@@ -221,22 +449,73 @@ async def _send_function_response(cid: int, model: str, body: dict, function_cal
     return ai_text
 
 async def call_gemini_raw(cid: int, parts: list, system_text: str) -> Optional[str]:
-    if not await fetch_api_keys(): return None
+    if not await fetch_api_keys():
+        return None
     model = await get_gemini_model(cid)
+
+    processed_parts = await _process_parts_for_api(parts)
+
     body = {
         "systemInstruction": {"parts": [{"text": system_text}]},
-        "contents": [{"role": "user", "parts": _normalize_parts(parts)}],
+        "contents": [{"role": "user", "parts": _normalize_parts(processed_parts)}],
         "generationConfig": {"maxOutputTokens": MAX_OUTPUT_TOKENS, "temperature": 0.4},
     }
     content, err = await try_api_call(json.dumps(body), model)
-    if not content: return None
+    if not content:
+        return None
     text, _ = extract_ai_text(content)
     return text
+
+
+async def _process_parts_for_api(parts: list) -> list:
+    """Convert large inline data parts to File API references.
+
+    For files larger than MAX_INLINE_FILE_BYTES (2MB), upload to the Files API
+    and replace inline data with a file URI reference.
+    """
+    processed = []
+    for part in parts:
+        if not isinstance(part, dict):
+            processed.append(part)
+            continue
+
+        inline_data = part.get("inlineData") or part.get("inline_data")
+        if inline_data and isinstance(inline_data, dict):
+            file_data = inline_data.get("data")
+            mime_type = inline_data.get("mimeType") or inline_data.get("mime_type") or "application/octet-stream"
+
+            if file_data and isinstance(file_data, str):
+                try:
+                    import base64 as _b64
+                    decoded = _b64.b64decode(file_data)
+                    file_size = len(decoded)
+
+                    display_name = part.get("display_name") or f"file_{int(time.time())}"
+
+                    if file_size > MAX_INLINE_FILE_BYTES:
+                        file_uri = await upload_file_with_retry(decoded, mime_type, display_name)
+                        if file_uri:
+                            processed.append({"fileUri": file_uri, "mimeType": mime_type})
+                            continue
+
+                except Exception as exc:
+                    logger.warning(f"File size check failed, falling back to inline: {exc}")
+
+            processed.append(part)
+            continue
+
+        processed.append(part)
+    return processed
+
+
 
 async def handle_gemini(cid: int, current_parts: list, system_text: str, use_tools: bool = True, use_functions: bool = True, user_name: str = "User") -> Optional[str]:
     model = await get_gemini_model(cid)
     history = await get_recent_history(cid, CONTEXT_SIZE)
-    body = build_body(history, current_parts, system_text, use_tools, use_functions)
+
+    processed_parts = await _process_parts_for_api(current_parts)
+
+    body = build_body(history, processed_parts, system_text, use_tools, use_functions)
     body["generationConfig"]["temperature"] = await get_user_temp(cid)
     
     if not await fetch_api_keys():

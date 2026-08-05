@@ -2,7 +2,7 @@ import base64
 from database import save_message, save_file_data, set_state, ensure_user
 from message import send_message, send_chat_action, download_telegram_file, get_telegram_file_info
 from upload import detect_mime_type, get_display_name, is_gemini_supported_mime
-from api import handle_gemini
+from api import handle_gemini, upload_file_with_retry
 from system import get_system_text
 from settings import photo_keyboard, file_prompt_keyboard
 from markdown_parse import escape_html
@@ -13,8 +13,17 @@ def _inline_part(mime: str, file_bytes: bytes) -> dict:
 
 
 async def _store_and_prompt(cid: int, file_name: str, mime: str, file_bytes: bytes, label: str) -> None:
-    encoded = base64.b64encode(file_bytes).decode('utf-8')
-    save_file_data(cid, {'mime_type': mime, 'display_name': file_name, 'base64': encoded})
+    from api import MAX_INLINE_FILE_BYTES
+    if len(file_bytes) <= MAX_INLINE_FILE_BYTES:
+        encoded = base64.b64encode(file_bytes).decode('utf-8')
+        save_file_data(cid, {'mime_type': mime, 'display_name': file_name, 'base64': encoded})
+    else:
+        file_uri = await upload_file_with_retry(file_bytes, mime, file_name)
+        if file_uri:
+            save_file_data(cid, {'file_uri': file_uri, 'mime_type': mime, 'display_name': file_name, 'from_files_api': True})
+        else:
+            encoded = base64.b64encode(file_bytes).decode('utf-8')
+            save_file_data(cid, {'mime_type': mime, 'display_name': file_name, 'base64': encoded})
     set_state(cid, f'awaiting_file_prompt:{file_name}')
     await send_message(
         cid,
