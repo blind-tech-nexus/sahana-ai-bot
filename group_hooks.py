@@ -7,7 +7,7 @@ def is_group_chat(message: dict) -> bool:
     return chat_type in {"group", "supergroup"}
 
 def extract_group_prompt(message: dict) -> Optional[str]:
-    text = (message.get("text") or message.get("caption") or "").strip()
+    text = (message.get("text") or message.get("caption") or "")
     
     reply_to = message.get("reply_to_message")
     is_reply_to_bot = False
@@ -17,7 +17,8 @@ def extract_group_prompt(message: dict) -> Optional[str]:
         if from_user.get("is_bot") and from_user.get("username", "").lower() == bot_username:
             is_reply_to_bot = True
             
-    aliases = {"ai"}
+    # Add default aliases including "sahana", "sahanai", "sahanaai"
+    aliases = {"ai", "sahana", "sahanai", "sahanaai"}
     for a in BOT_MENTION_ALIASES:
         if a: aliases.add(a.lower().lstrip("@"))
     if BOT_USERNAME:
@@ -35,7 +36,12 @@ def extract_group_prompt(message: dict) -> Optional[str]:
         
     cleaned_text = text
     if mentioned_alias:
-        pattern = rf"(?i)(?:^|\s)@{re.escape(mentioned_alias)}\b[\s,:-]*"
-        cleaned_text = re.sub(pattern, "", cleaned_text).strip()
+        pattern = rf"(?i)\s*@{re.escape(mentioned_alias)}\b\s*"
+        cleaned_text = re.sub(pattern, " ", cleaned_text).strip()
+        
+    # Only return the prompt if it's a group chat or reply to bot in group
+    chat_type = (message.get("chat") or {}).get("type", "")
+    if chat_type not in {"group", "supergroup"}:
+        return None
         
     return cleaned_text or ("Describe this" if (message.get("photo") or message.get("document")) else None)

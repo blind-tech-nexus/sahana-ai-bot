@@ -17,14 +17,34 @@ async def user_exists(uid: int) -> bool: return await r.hexists("totalUsers", st
 
 async def remove_all_user_data(uid: int) -> None:
     await r.delete(hk(uid), rsk(uid), sk(uid), fk(uid), mk(uid), ck(uid))
-    await r.delete(f"settings:{uid}:system", f"settings:{uid}:voice", f"settings:{uid}:temp", f"settings:{uid}:model")
+    await r.delete(f"settings:{uid}:system", f"settings:{uid}:voice", f"settings:{uid}:temp", f"settings:{uid}:model", f"settings:{uid}:tools")
     await r.hdel("totalUsers", str(uid))
 
 async def get_all_users() -> dict[str, str]: return await r.hgetall("totalUsers")
-async def ban_user(uid: int, name: str) -> None: await r.hset("bannedUsers", str(uid), name)
+async def ban_user(uid: int, name: str) -> None:
+    if is_admin(uid):
+        return
+    await r.hset("bannedUsers", str(uid), name)
+
 async def unban_user(uid: int) -> None: await r.hdel("bannedUsers", str(uid))
 async def is_banned(uid: int) -> bool: return await r.hexists("bannedUsers", str(uid))
 async def get_banned_users() -> dict[str, str]: return await r.hgetall("bannedUsers")
+
+async def ensure_admin_not_banned() -> None:
+    """Repair Redis immediately if any configured admin was banned.
+
+    Admins must never be banned. If stale/corrupt Redis data contains a banned
+    admin, clear the entire database so all ban/unban state and related bot data
+    is removed before the update continues.
+    """
+    from config import ADMINS
+    banned = await get_banned_users()
+    if any(str(admin_id) in banned for admin_id in ADMINS):
+        await r.flushdb()
+
+async def clear_full_redis_data() -> None:
+    """Clear all data in Redis. Use with caution."""
+    await r.flushdb()
 
 async def save_message(cid: int, role: str, text: str) -> None:
     key = hk(cid)
@@ -67,7 +87,9 @@ async def save_memory(cid: int, memory: str) -> None:
     if await r.llen(mk(cid)) > 50: await r.ltrim(mk(cid), 1, -1)
 
 async def clear_memories(cid: int) -> None: await r.delete(mk(cid))
-async def get_user_voice(cid: int) -> str: return await r.get(f"settings:{cid}:voice") or "en"
+async def get_user_voice(cid: int) -> str:
+    from config import DEFAULT_TTS_VOICE
+    return await r.get(f"settings:{cid}:voice") or DEFAULT_TTS_VOICE
 async def set_user_voice(cid: int, voice: str) -> None: await r.set(f"settings:{cid}:voice", voice)
 async def get_user_system(cid: int) -> str: return await r.get(f"settings:{cid}:system") or ""
 async def set_user_system(cid: int, text: str) -> None: await r.set(f"settings:{cid}:system", text)
@@ -83,10 +105,31 @@ async def set_user_model(cid: int, model: str) -> None: await r.set(f"settings:{
 async def ensure_user(cid: int, name: str) -> None:
     if not await user_exists(cid): await save_user(cid, name)
 
+# User tool preferences stored as JSON. Web search is available by default.
+DEFAULT_USER_TOOLS = {"web_search": True}
+
+async def get_user_tools(cid: int) -> dict:
+    val = await r.get(f"settings:{cid}:tools")
+    tools = dict(DEFAULT_USER_TOOLS)
+    if val:
+        try:
+            stored = json.loads(val)
+            if isinstance(stored, dict):
+                tools.update({k: bool(stored.get(k, False)) for k in DEFAULT_USER_TOOLS})
+        except Exception:
+            pass
+    return tools
+
+async def set_user_tools(cid: int, tools: dict) -> None:
+    clean = dict(DEFAULT_USER_TOOLS)
+    if isinstance(tools, dict):
+        clean.update({k: bool(tools.get(k, False)) for k in DEFAULT_USER_TOOLS})
+    await r.set(f"settings:{cid}:tools", json.dumps(clean))
+
 def is_admin(uid: int) -> bool:
     from config import ADMINS
     return uid in ADMINS
 
 async def check_banned(cid: int) -> bool: return await is_banned(cid) and not is_admin(cid)
-async def get_credit_message() -> str: return await r.get("settings:credit_message") or "Developer: Nepo AI companion Team\nCredits: Thanks for using Nepo AI companion."
+async def get_credit_message() -> str: return await r.get("settings:credit_message") or "Developer: Sahana AI Team\nCredits: Thanks for using Sahana AI."
 async def set_credit_message(text: str) -> None: await r.set("settings:credit_message", text)

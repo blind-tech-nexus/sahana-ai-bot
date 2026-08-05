@@ -36,7 +36,8 @@ def user_settings_keyboard() -> dict:
         [btn("🧠 System Instructions", "set_system"), btn("🎙️ TTS Voice", "set_voice")],
         [btn("🌡️ Temperature", "set_temp"), btn("🤖 AI Model", "set_model")],
         [btn("🧠 Memory", "memory_settings")],
-        [btn("🧰 Tools", "open_tools")],
+        [btn("🔧 Tools & Features", "open_tools")],
+        [btn("⚙️ Preferences", "preferences_menu")],
         [btn("🗑️ Clear Chat", "clear"), btn("🧹 Clear Attachment", "cls")],
         [btn("💬 Feedback", "feedback_prompt")],
         [btn("🔄 Export Chat", "export_chat")],
@@ -50,12 +51,14 @@ def admin_settings_keyboard() -> dict:
         [btn("🧠 System Instructions", "set_system"), btn("🎙️ TTS Voice", "set_voice")],
         [btn("🌡️ Temperature", "set_temp"), btn("🤖 AI Model", "set_model")],
         [btn("🧠 Memory", "memory_settings")],
-        [btn("🧰 Tools", "open_tools")],
+        [btn("🔧 Tools & Features", "open_tools")],
+        [btn("⚙️ Preferences", "preferences_menu")],
         [btn("🗑️ Clear Chat", "clear"), btn("🧹 Clear Attachment", "cls")],
         [btn("📊 Total Users", "admin_total"), btn("🚫 Banned Users", "admin_banned")],
         [btn("📢 Broadcast", "admin_broadcast")],
         [btn("🔄 Export Chat", "export_chat")],
         [btn("🛠 Developer & Credits", "developer_credits")],
+        [btn("⚠️ Clear Full Data", "admin_clear_full_data")],
         [btn("❌ Close", "close_settings")],
     ])
 
@@ -116,7 +119,8 @@ def temp_keyboard() -> dict:
 
 def model_keyboard() -> dict:
     return ikb([
-        [btn("⚡ Nepo Lite (Fast)", "model:nepo-lite"), btn("🧠 Nepo Smart (Advanced)", "model:nepo-smart")],
+        [btn("⚡ Sahana-1 (Fast)", "model:sahana-1"), btn("🧠 Sahana-2 (Balanced)", "model:sahana-2")],
+        [btn("🔬 Sahana-3 (Advanced)", "model:sahana-3")],
         [btn("🔙 Back", "back_settings")],
     ])
 
@@ -148,12 +152,33 @@ def broadcast_reply_keyboard() -> dict:
 
 def tools_keyboard() -> dict:
     return ikb([
-        [btn("✨ Text refiner", "tool:text_refiner")],
-        [btn("🌐 Text translator", "tool:text_translator")],
-        [btn("📊 Text analyzer", "tool:text_analyzer")],
-        [btn("📄 PDF creator", "tool:pdf_creator")],
-        [btn("🎙️ Audio transcriber", "tool:audio_transcriber")],
+        [btn("✨ Text Refiner", "tool:text_refiner"), btn("🌐 Text Translator", "tool:text_translator")],
+        [btn("📊 Text Analyzer", "tool:text_analyzer"), btn("📄 PDF Creator", "tool:pdf_creator")],
+        [btn("🎙️ Audio Transcriber", "tool:audio_transcriber"), btn("🔊 Text to Speech", "tool:tts_converter")],
+        [btn("🔍 Web Search", "tool:web_search"), btn("🎨 Image Generator", "tool:image_generator")],
+        [btn("🚀 Advanced Tools", "advanced_tools_menu")],
         [btn("❌ Close", "tools_close")],
+    ])
+
+
+def advanced_tools_keyboard() -> dict:
+    return ikb([
+        [btn("💻 Code Generator", "tool:code_generator"), btn("📝 Content Summarizer", "tool:content_summarizer")],
+        [btn("📧 Email Writer", "tool:email_writer"), btn("📱 Social Media Post", "tool:social_media_post")],
+        [btn("📚 Study Notes", "tool:study_notes"), btn("🍳 Recipe Creator", "tool:recipe_creator")],
+        [btn("💪 Fitness Plan", "tool:fitness_plan"), btn("✈️ Travel Planner", "tool:travel_planner")],
+        [btn("💡 Business Ideas", "tool:business_idea_generator"), btn("📖 Story Writer", "tool:story_writer")],
+        [btn("🧭 Blog Outline", "tool:blog_outline"), btn("🪶 Poem Writer", "tool:poem_writer")],
+        [btn("🔙 Back to Core Tools", "open_tools")],
+        [btn("❌ Close", "tools_close")],
+    ])
+
+def preferences_keyboard(tools_config: dict) -> dict:
+    """Generate keyboard for user tool preferences."""
+    ws_status = "✅ ON" if tools_config.get("web_search", True) else "❌ OFF"
+    return ikb([
+        [btn(f"🔍 Web Search {ws_status}", "pref_toggle_web_search")],
+        [btn("🔙 Back", "back_settings")],
     ])
 
 def share_keyboard() -> dict:
