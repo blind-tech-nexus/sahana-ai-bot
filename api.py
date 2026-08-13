@@ -6,14 +6,14 @@ import random
 import asyncio
 import httpx
 from typing import Optional
-from config import CONTEXT_SIZE, MODEL_LITE, MODEL_SMART
+from config import CONTEXT_SIZE, MODEL_SAHANA_1, MODEL_SAHANA_2, MODEL_SAHANA_3, DEFAULT_MODEL
 from api_keys import (
     fetch_api_keys, get_next_key_index, KeyRotator,
     is_key_on_cooldown, mark_key_error, clear_key_error,
     is_retriable_error, get_retry_after, compute_backoff_delay,
     get_rate_limiter,
 )
-from database import get_recent_history, save_message, get_user_temp, save_memory, get_user_model, get_user_tools
+from database import get_recent_history, save_message, get_user_temp, save_memory, get_memories, get_user_model, get_user_tools
 from markdown_parse import markdown_to_html, escape_html
 from message import send_message, send_chat_action
 
@@ -24,26 +24,73 @@ MAX_INLINE_FILE_BYTES = 2 * 1024 * 1024  # 2MB threshold for Files API
 FUNCTION_DECLARATIONS = [
     {
         "name": "save_memory",
-        "description": "Save an important piece of information about the user to long-term memory.",
-        "parameters": {"type": "object", "properties": {"memory": {"type": "string", "description": "The information to save."}}, "required": ["memory"]}
+        "description": "Save an important piece of information, fact, preference, or detail about the user to long-term memory for future reference.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "user_id": {
+                    "type": "integer",
+                    "description": "The user ID of the current user."
+                },
+                "memory": {
+                    "type": "string",
+                    "description": "The important information to save about the user."
+                }
+            },
+            "required": ["user_id", "memory"]
+        }
+    },
+    {
+        "name": "load_memory",
+        "description": "Load and retrieve saved long-term memories for the user when you need context, facts, or recall about the user.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "user_id": {
+                    "type": "integer",
+                    "description": "The user ID of the user whose memories to load."
+                }
+            },
+            "required": ["user_id"]
+        }
     },
     {
         "name": "create_pdf",
-        "description": "Create a PDF document on a given topic.",
-        "parameters": {"type": "object", "properties": {"topic": {"type": "string", "description": "The topic for the PDF."}}, "required": ["topic"]}
+        "description": "Create a downloadable PDF document on a given topic.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "topic": {
+                    "type": "string",
+                    "description": "The topic or subject content for the PDF document."
+                }
+            },
+            "required": ["topic"]
+        }
     },
     {
         "name": "generate_image",
         "description": "Generate an AI image based on a text prompt.",
-        "parameters": {"type": "object", "properties": {"prompt": {"type": "string", "description": "A detailed description of the image."}}, "required": ["prompt"]}
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "prompt": {
+                    "type": "string",
+                    "description": "A detailed description of the image to generate."
+                }
+            },
+            "required": ["prompt"]
+        }
     }
 ]
 
 async def get_gemini_model(chat_id: int) -> str:
     m = await get_user_model(chat_id)
-    if m in ("nepo-smart", "sahana-3"):
-        return MODEL_SMART
-    return MODEL_LITE
+    if m == "sahana-2":
+        return MODEL_SAHANA_2
+    if m == "sahana-3":
+        return MODEL_SAHANA_3
+    return MODEL_SAHANA_1
 
 GEMINI_SUPPORTED_MIMES = {
     "image/jpeg", "image/png", "image/webp", "image/heic", "image/heif", "image/gif",
@@ -411,9 +458,16 @@ def format_response_with_sources(ai_text: str, sources: list[dict]) -> str:
 async def _execute_function(cid: int, func_name: str, args: dict) -> dict:
     if func_name == "save_memory":
         memory_text = args.get("memory", "")
+        uid = args.get("user_id", cid)
         if memory_text:
-            await save_memory(cid, memory_text)
+            await save_memory(int(uid), memory_text)
             return {"status": "success", "message": f"Memory saved: {memory_text}"}
+    elif func_name == "load_memory":
+        uid = args.get("user_id", cid)
+        memories = await get_memories(int(uid))
+        if memories:
+            return {"status": "success", "user_id": uid, "memories": memories}
+        return {"status": "success", "user_id": uid, "memories": [], "message": "No saved memories found for this user."}
     elif func_name == "create_pdf":
         topic = args.get("topic", "")
         if topic:
@@ -534,7 +588,7 @@ async def handle_gemini(cid: int, current_parts: list, system_text: str, use_too
         function_calls = extract_function_calls(content)
         if function_calls:
             for fc in function_calls:
-                if fc["name"] == "save_memory": await send_chat_action(cid, "typing")
+                if fc["name"] in ("save_memory", "load_memory"): await send_chat_action(cid, "typing")
                 elif fc["name"] == "create_pdf": await send_chat_action(cid, "upload_document")
                 elif fc["name"] == "generate_image": await send_chat_action(cid, "upload_photo")
                 
