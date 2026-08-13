@@ -13,7 +13,7 @@ from api_keys import (
     is_retriable_error, get_retry_after, compute_backoff_delay,
     get_rate_limiter,
 )
-from database import get_recent_history, save_message, get_user_temp, save_memory, get_user_model
+from database import get_recent_history, save_message, get_user_temp, save_memory, get_user_model, get_user_tools
 from markdown_parse import markdown_to_html, escape_html
 from message import send_message, send_chat_action
 
@@ -41,7 +41,9 @@ FUNCTION_DECLARATIONS = [
 
 async def get_gemini_model(chat_id: int) -> str:
     m = await get_user_model(chat_id)
-    return MODEL_SMART if m == "nepo-smart" else MODEL_LITE
+    if m in ("nepo-smart", "sahana-3"):
+        return MODEL_SMART
+    return MODEL_LITE
 
 GEMINI_SUPPORTED_MIMES = {
     "image/jpeg", "image/png", "image/webp", "image/heic", "image/heif", "image/gif",
@@ -360,7 +362,7 @@ def build_body(history_messages: list[dict], current_parts: list, system_text: s
     }
     if use_tools or use_functions:
         tools: list[dict] = []
-        if use_tools: tools.append({"google_search": {}})
+        if use_tools: tools.append({"googleSearch": {}})
         if use_functions: tools.append({"functionDeclarations": FUNCTION_DECLARATIONS})
         body["tools"] = tools
     return body
@@ -513,9 +515,12 @@ async def handle_gemini(cid: int, current_parts: list, system_text: str, use_too
     model = await get_gemini_model(cid)
     history = await get_recent_history(cid, CONTEXT_SIZE)
 
+    user_tools = await get_user_tools(cid)
+    web_search_enabled = user_tools.get("web_search", True) and use_tools
+
     processed_parts = await _process_parts_for_api(current_parts)
 
-    body = build_body(history, processed_parts, system_text, use_tools, use_functions)
+    body = build_body(history, processed_parts, system_text, use_tools=web_search_enabled, use_functions=use_functions)
     body["generationConfig"]["temperature"] = await get_user_temp(cid)
     
     if not await fetch_api_keys():
@@ -554,3 +559,21 @@ async def handle_gemini(cid: int, current_parts: list, system_text: str, use_too
     await save_message(cid, "model", error)
     await send_message(cid, error)
     return None
+
+
+async def web_search(query: str, cid: int) -> dict:
+    """Execute a standalone web search query using Gemini Google Search Grounding."""
+    system_text = "Search the web and provide detailed, accurate results with sources."
+    parts = [{"text": f"Search the web for: {query}"}]
+    model = await get_gemini_model(cid)
+    body = {
+        "systemInstruction": {"parts": [{"text": system_text}]},
+        "contents": [{"role": "user", "parts": parts}],
+        "tools": [{"googleSearch": {}}],
+        "generationConfig": {"maxOutputTokens": MAX_OUTPUT_TOKENS, "temperature": 0.3},
+    }
+    content, err = await try_api_call(json.dumps(body), model)
+    if not content:
+        return {"status": "error", "message": err or "Failed to search web."}
+    ai_text, sources = extract_ai_text(content)
+    return {"status": "success", "results": ai_text, "sources": sources}

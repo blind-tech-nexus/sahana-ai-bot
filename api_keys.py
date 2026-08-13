@@ -1,3 +1,4 @@
+import os
 import random
 import httpx
 import logging
@@ -35,6 +36,14 @@ async def fetch_api_keys() -> bool:
                     return bool(api_keys)
     except Exception as exc:
         logger.warning(f"fetch_api_keys failed: {exc}")
+
+    env_keys = os.environ.get("GEMINI_API_KEY") or os.environ.get("API_KEYS") or os.environ.get("GEMINI_API_KEYS")
+    if env_keys:
+        api_keys = [k.strip() for k in env_keys.split(",") if k.strip()]
+        LAST_FETCH_TIME = current_time
+        logger.info(f"Using {len(api_keys)} api keys from environment variables.")
+        return bool(api_keys)
+
     return bool(api_keys)
 
 

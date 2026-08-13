@@ -5,10 +5,9 @@ TELEGRAM_API = f"https://api.telegram.org/bot{BOT_TOKEN}"
 POOL_API = "https://sr-pool-api-5bm.pages.dev"
 
 # Models
-MODEL_SAHANA_1 = "gemini-2.5-flash"
-MODEL_SAHANA_2 = "gemini-3-flash-preview"
-MODEL_SAHANA_3 = "gemini-3.5-flash"
-DEFAULT_MODEL = "sahana-1"
+MODEL_LITE = "gemini-2.0-flash"
+MODEL_SMART = "gemini-1.5-pro"
+DEFAULT_MODEL = "nepo-lite"
 
 ADMINS = [7026190306, 6280547580]
 DEFAULT_TTS_VOICE = "en-US-AriaNeural"

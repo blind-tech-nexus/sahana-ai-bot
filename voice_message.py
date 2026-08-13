@@ -31,12 +31,12 @@ async def handle_voice(cid: int, voice: dict, name: str) -> None:
     if not transcription_text or transcription_text in ("No response received from AI.", "Failed to parse AI response."):
         await send_message(cid, "❌ Failed to transcribe voice message.")
         return
-    save_message(cid, "user", f"[Voice] {transcription_text}")
+    await save_message(cid, "user", f"[Voice] {transcription_text}")
     await send_message(cid, f"📝 Transcribed: {transcription_text}")
 
     # Send transcribed text directly to Gemini (with function calling support)
     current_parts: list = [{"text": transcription_text}]
-    file_data = get_file_data(cid)
+    file_data = await get_file_data(cid)
     has_file = False
     if file_data:
         if file_data.get("file_uri"):
@@ -48,7 +48,7 @@ async def handle_voice(cid: int, voice: dict, name: str) -> None:
     await handle_gemini(
         cid,
         current_parts,
-        get_system_text(name, cid),
+        await get_system_text(name, cid),
         use_tools=not has_file,
         user_name=name,
     )
