@@ -1,8 +1,10 @@
 import base64
+from typing import Optional
 from database import save_message, save_file_data, set_state, ensure_user
 from message import send_message, send_chat_action, download_telegram_file, get_telegram_file_info
 from upload import detect_mime_type, get_display_name, is_gemini_supported_mime
-from api import handle_gemini, upload_file_with_retry
+from api import handle_gemini
+from api_keys import upload_file_with_retry
 from system import get_system_text
 from settings import photo_keyboard, file_prompt_keyboard
 from markdown_parse import escape_html

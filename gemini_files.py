@@ -1,5 +1,5 @@
 import base64
-from api import call_gemini_raw, normalize_mime_type, upload_file_with_retry, delete_gemini_file, MAX_INLINE_FILE_BYTES
+from api import call_gemini_raw, normalize_mime_type, upload_file_with_retry, delete_gemini_file, MAX_INLINE_FILE_BYTES, try_api_call, get_gemini_model, extract_ai_text
 
 TRANSCRIBE_PROMPT = (
     "Transcribe the uploaded audio exactly in its original language. "
@@ -35,25 +35,19 @@ async def transcribe_audio_file_api(audio_bytes: bytes, mime_type: str, display_
         if not file_uri:
             return None, "Failed to upload audio file to Gemini Files API"
 
-        parts = [
-            {"text": TRANSCRIBE_PROMPT}
-        ]
-        from api import try_api_call, get_gemini_model, extract_ai_text, _normalize_parts
-        import json as _json
-
         model = await get_gemini_model(chat_id)
         body = {
             "systemInstruction": {"parts": [{"text": "You are an audio transcriber."}]},
             "contents": [{"role": "user", "parts": [{"fileUri": file_uri, "mimeType": mime_type}, {"text": TRANSCRIBE_PROMPT}]}],
             "generationConfig": {"maxOutputTokens": 64000, "temperature": 0.4},
         }
-        content, err = await try_api_call(_json.dumps(body), model)
+        data, err = await try_api_call(model, body)
 
         await delete_gemini_file(file_uri)
 
-        if not content:
+        if not data:
             return None, err or "Failed to transcribe audio"
-        text, _ = extract_ai_text(content)
+        text, _ = extract_ai_text(data)
         if not text or text in ("No response received from AI.", "Failed to parse AI response."):
             return None, "Empty transcription result or failed to parse"
         return text.strip(), None

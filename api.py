@@ -1,17 +1,15 @@
 import json
 import base64
 import logging
-import time
-import random
 import asyncio
-import httpx
+import time
 from typing import Optional
 from config import CONTEXT_SIZE, MODEL_SAHANA_1, MODEL_SAHANA_2, MODEL_SAHANA_3, DEFAULT_MODEL
 from api_keys import (
-    fetch_api_keys, get_next_key_index, KeyRotator,
+    fetch_api_keys, get_next_key_index, _gemini_request, HTTPException,
+    normalize_mime_type, upload_file_to_gemini, upload_file_with_retry, delete_gemini_file,
     is_key_on_cooldown, mark_key_error, clear_key_error,
-    is_retriable_error, get_retry_after, compute_backoff_delay,
-    get_rate_limiter,
+    compute_backoff_delay, get_rate_limiter,
 )
 from database import get_recent_history, save_message, get_user_temp, save_memory, get_memories, get_user_model, get_user_tools
 from markdown_parse import markdown_to_html, escape_html
@@ -129,254 +127,26 @@ def _normalize_parts(parts: list) -> list:
     return normalized
 
 
-async def upload_file_to_gemini(
-    file_bytes: bytes,
-    mime_type: str,
-    display_name: str = "file",
-) -> Optional[str]:
-    """Upload a file to the Gemini Files API and return the file URI.
-
-    Uses the Files API for files larger than MAX_INLINE_FILE_BYTES (2MB).
-    Files are automatically deleted after 48 hours.
-    Returns the file URI (e.g., 'files/abc-123') or None on failure.
-    """
-    from api_keys import api_keys as _all_keys, get_next_key_index
-
-    if not await fetch_api_keys():
-        return None
-
-    key_idx = await get_next_key_index()
-    keys = _all_keys
-    if not keys:
-        return None
-
-    mime_type = normalize_mime_type(mime_type)
-    file_size = len(file_bytes)
-
-    async with httpx.AsyncClient(timeout=120.0) as client:
-        for attempt in range(min(3, len(keys))):
-            key = keys[(key_idx + attempt) % len(keys)]
-            upload_url = (
-                "https://generativelanguage.googleapis.com/upload/v1beta/files"
-                f"?key={key}&uploadType=resumable"
-            )
-            metadata = {
-                "file": {
-                    "display_name": display_name[:100],
-                    "mime_type": mime_type,
-                }
-            }
-            headers = {
-                "Content-Type": "application/json; charset=utf-8",
-                "X-Goog-Upload-File-Size": str(file_size),
-                "X-Goog-Upload-Protocol": "resumable",
-            }
-            try:
-                init_resp = await client.post(
-                    upload_url,
-                    content=json.dumps(metadata),
-                    headers=headers,
-                    timeout=30.0,
-                )
-                if init_resp.status_code != 200 and init_resp.status_code != 201:
-                    if init_resp.status_code == 429:
-                        mark_key_error(key)
-                        delay = compute_backoff_delay(attempt, max_delay=15.0, jitter=True)
-                        await asyncio.sleep(delay)
-                        continue
-                    logger.warning(
-                        f"File upload init failed: {init_resp.status_code} {init_resp.text[:300]}"
-                    )
-                    continue
-
-                upload_url_final = init_resp.headers.get("Location") or init_resp.headers.get("location")
-                if not upload_url_final:
-                    logger.warning("File upload: no upload URL returned")
-                    continue
-
-                upload_headers = {
-                    "Content-Type": mime_type,
-                    "X-Goog-Upload-File-Size": str(file_size),
-                    "X-Goog-Upload-Protocol": "resumable",
-                    "X-Goog-Upload-Command": "upload, finalize",
-                    "X-Goog-Upload-Offset": "0",
-                }
-                upload_resp = await client.post(
-                    upload_url_final,
-                    content=file_bytes,
-                    headers=upload_headers,
-                    timeout=120.0,
-                )
-
-                if upload_resp.status_code in (200, 201):
-                    resp_data = upload_resp.json()
-                    name = resp_data.get("name") or resp_data.get("file", {}).get("name")
-                    if name:
-                        return name
-                    logger.warning(f"Upload returned no file name: {str(resp_data)[:300]}")
-                else:
-                    logger.warning(
-                        f"File upload content failed: {upload_resp.status_code} {upload_resp.text[:300]}"
-                    )
-            except Exception as exc:
-                logger.warning(f"File upload exception: {exc}")
-
-    return None
-
-
-async def upload_file_with_retry(
-    file_bytes: bytes,
-    mime_type: str,
-    display_name: str = "file",
-) -> Optional[str]:
-    """Upload a file to Gemini Files API with retry logic.
-
-    Returns the file URI or None on failure.
-    """
-    max_upload_retries = 3
-    for attempt in range(max_upload_retries):
-        result = await upload_file_to_gemini(file_bytes, mime_type, display_name)
-        if result:
-            return result
-        if attempt < max_upload_retries - 1:
-            delay = compute_backoff_delay(attempt, max_delay=10.0, jitter=True)
-            await asyncio.sleep(delay)
-    return None
-
-
 async def delete_gemini_file(file_uri: str) -> bool:
-    """Delete a file from the Gemini Files API.
+    """Delete a file from the Gemini Files API. Delegates to api_keys module."""
+    from api_keys import delete_gemini_file as _delete
+    return await _delete(file_uri)
 
-    file_uri should be like 'files/abc-123'.
+
+async def try_api_call(model: str, body: dict) -> tuple[Optional[dict], Optional[str]]:
+    """Execute a Gemini content generation request with key rotation.
+
+    Returns (response_dict, error_message). response_dict is None on failure.
     """
-    from api_keys import api_keys as _all_keys, get_next_key_index
-
-    if not await fetch_api_keys():
-        return False
-
-    key = None
-    idx = await get_next_key_index()
-    keys = _all_keys
-    if keys:
-        key = keys[idx % len(keys)]
-
-    if not key:
-        return False
-
-    url = f"https://generativelanguage.googleapis.com/v1beta/{file_uri}?key={key}"
-    try:
-        async with httpx.AsyncClient(timeout=30.0) as client:
-            resp = await client.delete(url)
-            return resp.status_code == 200
-    except Exception as exc:
-        logger.warning(f"Failed to delete Gemini file {file_uri}: {exc}")
-        return False
-
-
-
-async def try_api_call(body_json: str, model: str) -> tuple[Optional[str], Optional[str]]:
     if not await fetch_api_keys():
         return None, "No API keys available"
     start_idx = await get_next_key_index()
-    from api_keys import api_keys as _all_keys
-    rotator = KeyRotator(start_idx, _all_keys)
-    last_error = None
-
-    if not rotator.available_count:
-        return None, "All API keys are on cooldown (rate limited)"
-
-    limiter = get_rate_limiter()
-    async with httpx.AsyncClient(
-        timeout=120.0,
-        limits=httpx.Limits(max_connections=500, max_keepalive_connections=100),
-    ) as client:
-        attempt = 0
-        max_retries = min(6, max(3, rotator.available_count))
-
-        while attempt < max_retries:
-            if not await limiter.acquire("gemini_api", timeout=30.0):
-                last_error = "Rate limiter timeout waiting to acquire token"
-                logger.warning(last_error)
-                return None, last_error
-
-            key = rotator.get_next_key()
-            if key is None:
-                if last_error is None:
-                    last_error = "All API keys exhausted"
-                break
-
-            url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={key}"
-            try:
-                resp = await client.post(
-                    url,
-                    content=body_json,
-                    headers={"Content-Type": "application/json"},
-                )
-                if resp.status_code == 200:
-                    clear_key_error(key)
-                    return resp.text, None
-
-                error_text = resp.text
-                logger.warning(
-                    f"API call failed with status {resp.status_code}: {error_text[:500]}"
-                )
-
-                if resp.status_code == 429:
-                    retry_after = get_retry_after(resp)
-                    mark_key_error(key)
-
-                    if attempt < max_retries - 1:
-                        if retry_after > 0:
-                            base_delay = retry_after
-                        else:
-                            base_delay = compute_backoff_delay(attempt, max_delay=30.0, jitter=True)
-
-                        logger.info(
-                            f"429 on key index {start_idx + rotator.tried_count - 1}, "
-                            f"retrying in {base_delay:.1f}s (attempt {attempt + 1}/{max_retries})"
-                        )
-                        await asyncio.sleep(base_delay)
-                        attempt += 1
-                        continue
-                    last_error = f"Status 429: Rate limit exhausted after retries"
-                    break
-
-                if resp.status_code >= 500:
-                    if attempt < max_retries - 1:
-                        delay = compute_backoff_delay(attempt, max_delay=15.0, jitter=True)
-                        await asyncio.sleep(delay)
-                        attempt += 1
-                        continue
-                    last_error = f"Status {resp.status_code}: Server error"
-                    break
-
-                if resp.status_code in (400, 401, 403):
-                    last_error = f"Status {resp.status_code}: {error_text}"
-                    break
-
-                last_error = f"Status {resp.status_code}: {error_text}"
-                break
-
-            except httpx.TimeoutException:
-                last_error = "Request timed out"
-                logger.warning(f"Timeout on API call (attempt {attempt + 1})")
-                if attempt < max_retries - 1:
-                    delay = compute_backoff_delay(attempt, max_delay=10.0, jitter=True)
-                    await asyncio.sleep(delay)
-                    attempt += 1
-                    continue
-                break
-            except Exception as exc:
-                last_error = str(exc)
-                logger.warning(f"API call exception: {exc}")
-                if attempt < max_retries - 1:
-                    delay = compute_backoff_delay(attempt, max_delay=10.0, jitter=True)
-                    await asyncio.sleep(delay)
-                    attempt += 1
-                    continue
-                break
-
-    return None, last_error or "All keys exhausted"
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
+    data, err = await _gemini_request(url, body, start_idx)
+    if data:
+        return data, None
+    msg = err.message if isinstance(err, HTTPException) else (str(err) if err else "All keys exhausted")
+    return None, msg
 
 def build_body(history_messages: list[dict], current_parts: list, system_text: str, use_tools: bool = True, use_functions: bool = True) -> dict:
     raw_msgs = []
@@ -427,18 +197,14 @@ def extract_sources(data: dict) -> list[dict]:
     except Exception: pass
     return sources
 
-def extract_ai_text(content: str) -> tuple[str, list[dict]]:
-    try: data = json.loads(content)
-    except json.JSONDecodeError: return "Failed to parse AI response.", []
+def extract_ai_text(data: dict) -> tuple[str, list[dict]]:
     candidates = data.get("candidates", [])
     if not candidates: return "No response received from AI.", []
     parts = candidates[0].get("content", {}).get("parts", [])
     ai_text = "\n".join(p["text"] for p in parts if p.get("text"))
     return (ai_text or "No response received from AI."), extract_sources(data)
 
-def extract_function_calls(content: str) -> list[dict]:
-    try: data = json.loads(content)
-    except json.JSONDecodeError: return []
+def extract_function_calls(data: dict) -> list[dict]:
     candidates = data.get("candidates", [])
     if not candidates: return []
     parts = candidates[0].get("content", {}).get("parts", [])
@@ -495,13 +261,13 @@ async def _send_function_response(cid: int, model: str, body: dict, function_cal
     
     follow_up = dict(body)
     follow_up["contents"] = contents
-    content, err = await try_api_call(json.dumps(follow_up), model)
-    if not content: return None
+    data, err = await try_api_call(model, follow_up)
+    if not data: return None
     
-    more_calls = extract_function_calls(content)
+    more_calls = extract_function_calls(data)
     if more_calls: return await _send_function_response(cid, model, follow_up, more_calls)
     
-    ai_text, _ = extract_ai_text(content)
+    ai_text, _ = extract_ai_text(data)
     return ai_text
 
 async def call_gemini_raw(cid: int, parts: list, system_text: str) -> Optional[str]:
@@ -516,10 +282,10 @@ async def call_gemini_raw(cid: int, parts: list, system_text: str) -> Optional[s
         "contents": [{"role": "user", "parts": _normalize_parts(processed_parts)}],
         "generationConfig": {"maxOutputTokens": MAX_OUTPUT_TOKENS, "temperature": 0.4},
     }
-    content, err = await try_api_call(json.dumps(body), model)
-    if not content:
+    data, err = await try_api_call(model, body)
+    if not data:
         return None
-    text, _ = extract_ai_text(content)
+    text, _ = extract_ai_text(data)
     return text
 
 
@@ -583,9 +349,9 @@ async def handle_gemini(cid: int, current_parts: list, system_text: str, use_too
         await send_message(cid, msg)
         return None
         
-    content, err = await try_api_call(json.dumps(body), model)
-    if content:
-        function_calls = extract_function_calls(content)
+    data, err = await try_api_call(model, body)
+    if data:
+        function_calls = extract_function_calls(data)
         if function_calls:
             for fc in function_calls:
                 if fc["name"] in ("save_memory", "load_memory"): await send_chat_action(cid, "typing")
@@ -601,7 +367,7 @@ async def handle_gemini(cid: int, current_parts: list, system_text: str, use_too
                     await send_message(cid, final_text)
                 return final_text
                 
-        ai_text, sources = extract_ai_text(content)
+        ai_text, sources = extract_ai_text(data)
         await save_message(cid, "model", ai_text)
         if ai_text not in ("No response received from AI.", "Failed to parse AI response."):
             await send_message(cid, format_response_with_sources(ai_text, sources), parse_mode="HTML")
@@ -626,8 +392,8 @@ async def web_search(query: str, cid: int) -> dict:
         "tools": [{"googleSearch": {}}],
         "generationConfig": {"maxOutputTokens": MAX_OUTPUT_TOKENS, "temperature": 0.3},
     }
-    content, err = await try_api_call(json.dumps(body), model)
-    if not content:
+    data, err = await try_api_call(model, body)
+    if not data:
         return {"status": "error", "message": err or "Failed to search web."}
-    ai_text, sources = extract_ai_text(content)
+    ai_text, sources = extract_ai_text(data)
     return {"status": "success", "results": ai_text, "sources": sources}
