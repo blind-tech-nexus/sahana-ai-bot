@@ -133,10 +133,41 @@ async def delete_gemini_file(file_uri: str) -> bool:
     return await _delete(file_uri)
 
 
+def _friendly_error_message(raw_msg: str) -> str:
+    """Convert raw API error JSON into user-friendly message."""
+    if not raw_msg:
+        return "All API keys are temporarily busy. Please try again in a moment."
+    low = raw_msg.lower()
+    if "429" in raw_msg or "resource_exhausted" in low or "quota" in low or "exceeded your current quota" in low:
+        # Try to extract retry delay
+        import re
+        m = re.search(r'"retryDelay"\s*:\s*"([^"]+)"', raw_msg)
+        if m:
+            delay = m.group(1)
+            return f"⏳ All API keys hit quota limits. Please retry in {delay}. (Automatic rotation exhausted all keys)"
+        # Also check RetryInfo
+        if "retry" in low:
+            return "⏳ All API keys are rate-limited right now. Please wait ~30-60 seconds and try again. (Automatic key rotation tried all available keys)"
+        return "⏳ Service is busy (quota exceeded). Please try again in ~30 seconds. All keys were rotated automatically."
+    if "503" in raw_msg or "unavailable" in low or "overloaded" in low:
+        return "⚠️ Gemini service is temporarily overloaded. Please try again in a few seconds."
+    if "500" in raw_msg:
+        return "⚠️ Gemini service error. Please try again shortly."
+    if "401" in raw_msg or "403" in raw_msg or "permission" in low:
+        return "⚠️ Some API keys are invalid or have permission issues. The system rotated to next keys but none succeeded."
+    # Fallback: truncated raw but friendly prefix
+    short = raw_msg[:500]
+    # Avoid exposing full JSON with tons of details; give summary
+    if len(short) > 200:
+        short = short[:200] + "..."
+    return short
+
+
 async def try_api_call(model: str, body: dict) -> tuple[Optional[dict], Optional[str]]:
     """Execute a Gemini content generation request with key rotation.
 
-    Returns (response_dict, error_message). response_dict is None on failure.
+    Uses full pool rotation (each key once). If all keys are on cooldown,
+    waits for the soonest to recover and retries once. Returns (response_dict, error_message).
     """
     if not await fetch_api_keys():
         return None, "No API keys available"
@@ -145,8 +176,29 @@ async def try_api_call(model: str, body: dict) -> tuple[Optional[dict], Optional
     data, err = await _gemini_request(url, body, start_idx)
     if data:
         return data, None
-    msg = err.message if isinstance(err, HTTPException) else (str(err) if err else "All keys exhausted")
-    return None, msg
+    raw_msg = err.message if isinstance(err, HTTPException) else (str(err) if err else "All keys exhausted")
+    # If 429 and cooldown will clear soon, wait and retry one more full cycle
+    low = raw_msg.lower() if isinstance(raw_msg, str) else ""
+    if "429" in raw_msg or "resource_exhausted" in low or "quota" in low:
+        try:
+            from api_keys import time_until_next_key_available, get_available_keys
+            wait = time_until_next_key_available()
+            # If next key available within 12s, wait and retry once
+            if 0 < wait <= 12.0:
+                logger.info(f"All keys 429, waiting {wait:.1f}s for next key then retrying once")
+                await asyncio.sleep(wait + 0.4)
+                # Refresh start index
+                start_idx2 = await get_next_key_index()
+                data2, err2 = await _gemini_request(url, body, start_idx2)
+                if data2:
+                    return data2, None
+                # Use second error if exists
+                if err2:
+                    raw_msg = err2.message if isinstance(err2, HTTPException) else str(err2)
+        except Exception as exc:
+            logger.debug(f"429 retry wait failed: {exc}")
+    friendly = _friendly_error_message(raw_msg)
+    return None, friendly
 
 def build_body(history_messages: list[dict], current_parts: list, system_text: str, use_tools: bool = True, use_functions: bool = True) -> dict:
     raw_msgs = []
@@ -375,9 +427,22 @@ async def handle_gemini(cid: int, current_parts: list, system_text: str, use_too
             await send_message(cid, ai_text)
         return ai_text
         
-    error = f"Error: {err or 'Unknown error occurred'}"
-    await save_message(cid, "model", error)
-    await send_message(cid, error)
+    # err is already user-friendly from try_api_call
+    friendly_err = err or "Unknown error occurred"
+    # Log diagnostics
+    try:
+        from api_keys import get_cooldown_stats
+        stats = get_cooldown_stats()
+        logger.warning(f"handle_gemini failed cid={cid} err={friendly_err[:200]} stats={stats}")
+    except Exception:
+        pass
+    # Don't prefix with "Error:" if message already has emoji/friendly prefix
+    if friendly_err.strip().startswith(("⏳", "⚠️", "❌")):
+        error_msg = friendly_err
+    else:
+        error_msg = f"❌ {friendly_err}"
+    await save_message(cid, "model", error_msg)
+    await send_message(cid, error_msg)
     return None
 
 
