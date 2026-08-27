@@ -156,7 +156,7 @@ async def execute_text_to_pdf(cid: int, prompt: str, file_name: str | None = Non
     user_prompt = (
         "Create text content to generate a PDF. "
         f"Topic request: {prompt}. "
-        "Search the web when needed, and return only <page>...</page> content with <text> and <paragraph>."
+        "Return only <page>...</page> content with <text> and <paragraph>."
     )
 
     raw = await call_gemini_raw(cid, [{"text": user_prompt}], system_text)

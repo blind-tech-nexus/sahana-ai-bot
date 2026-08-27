@@ -52,7 +52,7 @@ async def _process_non_image(cid: int, name: str, file_name: str, mime: str, fil
     if caption:
         await save_message(cid, 'user', f'[{tag}: {file_name}] {caption}')
         parts: list = [{'text': caption}, _inline_part(mime, file_bytes)]
-        await handle_gemini(cid, parts, await get_system_text(name, cid), use_tools=False)
+        await handle_gemini(cid, parts, await get_system_text(name, cid))
         return
     await _store_and_prompt(cid, file_name, mime, file_bytes, upload_label)
 
@@ -79,7 +79,7 @@ async def handle_photo(cid: int, message: dict, name: str) -> None:
     if caption:
         await save_message(cid, 'user', f'[Image: {display}] {caption}')
         parts: list = [{'text': caption}, {'inlineData': {'mimeType': mime, 'data': encoded}}]
-        await handle_gemini(cid, parts, await get_system_text(name, cid), use_tools=False)
+        await handle_gemini(cid, parts, await get_system_text(name, cid))
         return
     await send_message(cid, f'✅ Image ready: <b>{escape_html(display)}</b>\n\nType your prompt or tap Describe.', parse_mode='HTML', reply_markup=photo_keyboard())
 

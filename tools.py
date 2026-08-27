@@ -391,17 +391,7 @@ async def open_tools_menu(cid: int) -> None:
 async def open_advanced_tools_menu(cid: int) -> None:
     await send_message(cid, open_advanced_tools_text(), parse_mode="HTML", reply_markup=advanced_tools_keyboard())
 
-async def run_web_search_tool(cid: int, query: str) -> None:
-    from api import web_search
-    result = await web_search(query, cid)
-    if result.get("status") != "success":
-        await send_message(cid, f"❌ Web search failed. {result.get('message', '')}", reply_markup=TOOL_BACK)
-        return
-    body = result.get("results", "")
-    sources = result.get("sources") or []
-    if sources:
-        body += "\n\nSources:\n" + "\n".join(f"- {s.get('title')}: {s.get('url')}" for s in sources)
-    await send_tool_long_text(cid, f"🔍 <b>Web Search Results</b>\n\n{body}", "web_search_results.txt", "✅ Web search completed.")
+# run_web_search_tool removed — googleSearch built-in tool disabled; only functionDeclarations remain.
 
 async def run_image_generator_tool(cid: int, prompt: str) -> None:
     from image_generation import execute_image

@@ -105,26 +105,17 @@ async def set_user_model(cid: int, model: str) -> None: await r.set(f"settings:{
 async def ensure_user(cid: int, name: str) -> None:
     if not await user_exists(cid): await save_user(cid, name)
 
-# User tool preferences stored as JSON. Web search is available by default.
-DEFAULT_USER_TOOLS = {"web_search": True}
+# User tool preferences — built-in tools removed, only functionDeclarations are used.
+# Kept for backward compatibility; returns empty dict.
+DEFAULT_USER_TOOLS: dict = {}
 
 async def get_user_tools(cid: int) -> dict:
-    val = await r.get(f"settings:{cid}:tools")
-    tools = dict(DEFAULT_USER_TOOLS)
-    if val:
-        try:
-            stored = json.loads(val)
-            if isinstance(stored, dict):
-                tools.update({k: bool(stored.get(k, False)) for k in DEFAULT_USER_TOOLS})
-        except Exception:
-            pass
-    return tools
+    # No built-in tools — always return empty; kept for compatibility
+    return {}
 
 async def set_user_tools(cid: int, tools: dict) -> None:
-    clean = dict(DEFAULT_USER_TOOLS)
-    if isinstance(tools, dict):
-        clean.update({k: bool(tools.get(k, False)) for k in DEFAULT_USER_TOOLS})
-    await r.set(f"settings:{cid}:tools", json.dumps(clean))
+    # No-op — built-in tools (googleSearch) removed
+    return
 
 def is_admin(uid: int) -> bool:
     from config import ADMINS

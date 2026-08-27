@@ -11,7 +11,7 @@ from api_keys import (
     is_key_on_cooldown, mark_key_error, clear_key_error,
     compute_backoff_delay, get_rate_limiter,
 )
-from database import get_recent_history, save_message, get_user_temp, save_memory, get_memories, get_user_model, get_user_tools
+from database import get_recent_history, save_message, get_user_temp, save_memory, get_memories, get_user_model
 from markdown_parse import markdown_to_html, escape_html
 from message import send_message, send_chat_action
 
@@ -200,7 +200,7 @@ async def try_api_call(model: str, body: dict) -> tuple[Optional[dict], Optional
     friendly = _friendly_error_message(raw_msg)
     return None, friendly
 
-def build_body(history_messages: list[dict], current_parts: list, system_text: str, use_tools: bool = True, use_functions: bool = True) -> dict:
+def build_body(history_messages: list[dict], current_parts: list, system_text: str, use_functions: bool = True) -> dict:
     raw_msgs = []
     for msg in history_messages:
         role = "user" if msg.get("role") == "user" else "model"
@@ -229,32 +229,21 @@ def build_body(history_messages: list[dict], current_parts: list, system_text: s
         "contents": alternating_contents,
         "generationConfig": {"maxOutputTokens": MAX_OUTPUT_TOKENS, "temperature": 1.0},
     }
-    if use_tools or use_functions:
-        tools: list[dict] = []
-        if use_tools: tools.append({"googleSearch": {}})
-        if use_functions: tools.append({"functionDeclarations": FUNCTION_DECLARATIONS})
-        body["tools"] = tools
+    # Only function calling is enabled — no built-in tools (googleSearch removed)
+    if use_functions:
+        body["tools"] = [{"functionDeclarations": FUNCTION_DECLARATIONS}]
     return body
 
 def extract_sources(data: dict) -> list[dict]:
-    sources = []
-    seen = set()
-    try:
-        for chunk in data.get("candidates", [{}])[0].get("groundingMetadata", {}).get("groundingChunks", []):
-            web = chunk.get("web", {})
-            uri, title = web.get("uri", ""), web.get("title", "Source")
-            if uri and uri not in seen:
-                seen.add(uri)
-                sources.append({"title": title.strip(), "url": uri.strip()})
-    except Exception: pass
-    return sources
+    # Built-in grounding removed — kept for backward compatibility
+    return []
 
 def extract_ai_text(data: dict) -> tuple[str, list[dict]]:
     candidates = data.get("candidates", [])
     if not candidates: return "No response received from AI.", []
     parts = candidates[0].get("content", {}).get("parts", [])
     ai_text = "\n".join(p["text"] for p in parts if p.get("text"))
-    return (ai_text or "No response received from AI."), extract_sources(data)
+    return (ai_text or "No response received from AI."), []
 
 def extract_function_calls(data: dict) -> list[dict]:
     candidates = data.get("candidates", [])
@@ -266,12 +255,9 @@ def extract_function_calls(data: dict) -> list[dict]:
         if fc: calls.append({"name": fc.get("name", ""), "args": fc.get("args", {})})
     return calls
 
-def format_response_with_sources(ai_text: str, sources: list[dict]) -> str:
-    html = markdown_to_html(ai_text)
-    if sources:
-        html += "\n\n📌 <b>Sources:</b>\n"
-        html += "".join(f'• <a href="{escape_html(s["url"])}">{escape_html(s["title"])}</a>\n' for s in sources)
-    return html
+def format_response_with_sources(ai_text: str, sources: list[dict] = None) -> str:
+    # Sources are no longer produced (googleSearch removed); keep function for compatibility
+    return markdown_to_html(ai_text)
 
 async def _execute_function(cid: int, func_name: str, args: dict) -> dict:
     if func_name == "save_memory":
@@ -383,16 +369,14 @@ async def _process_parts_for_api(parts: list) -> list:
 
 
 
-async def handle_gemini(cid: int, current_parts: list, system_text: str, use_tools: bool = True, use_functions: bool = True, user_name: str = "User") -> Optional[str]:
+async def handle_gemini(cid: int, current_parts: list, system_text: str, use_functions: bool = True, user_name: str = "User", **kwargs) -> Optional[str]:
     model = await get_gemini_model(cid)
     history = await get_recent_history(cid, CONTEXT_SIZE)
 
-    user_tools = await get_user_tools(cid)
-    web_search_enabled = user_tools.get("web_search", True) and use_tools
-
     processed_parts = await _process_parts_for_api(current_parts)
 
-    body = build_body(history, processed_parts, system_text, use_tools=web_search_enabled, use_functions=use_functions)
+    # Only functionDeclarations are sent — all built-in tools (googleSearch) removed
+    body = build_body(history, processed_parts, system_text, use_functions=use_functions)
     body["generationConfig"]["temperature"] = await get_user_temp(cid)
     
     if not await fetch_api_keys():
@@ -446,19 +430,5 @@ async def handle_gemini(cid: int, current_parts: list, system_text: str, use_too
     return None
 
 
-async def web_search(query: str, cid: int) -> dict:
-    """Execute a standalone web search query using Gemini Google Search Grounding."""
-    system_text = "Search the web and provide detailed, accurate results with sources."
-    parts = [{"text": f"Search the web for: {query}"}]
-    model = await get_gemini_model(cid)
-    body = {
-        "systemInstruction": {"parts": [{"text": system_text}]},
-        "contents": [{"role": "user", "parts": parts}],
-        "tools": [{"googleSearch": {}}],
-        "generationConfig": {"maxOutputTokens": MAX_OUTPUT_TOKENS, "temperature": 0.3},
-    }
-    data, err = await try_api_call(model, body)
-    if not data:
-        return {"status": "error", "message": err or "Failed to search web."}
-    ai_text, sources = extract_ai_text(data)
-    return {"status": "success", "results": ai_text, "sources": sources}
+# web_search removed — googleSearch built-in tool is disabled.
+# Only functionDeclarations are used for API requests.

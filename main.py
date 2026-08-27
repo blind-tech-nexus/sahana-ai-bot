@@ -15,7 +15,7 @@ from database import (
     get_memories, save_memory, clear_memories,
     ensure_user, is_admin, check_banned,
     get_user_model, set_user_model,
-    get_user_tools, set_user_tools, clear_full_redis_data,
+    clear_full_redis_data,
 )
 from message import (
     send_message, send_photo, send_voice_bytes,
@@ -49,7 +49,7 @@ from tools import (
     run_code_generator, run_content_summarizer, run_email_writer, run_social_media_post,
     run_study_notes, run_recipe_creator, run_fitness_plan, run_travel_planner,
     run_business_idea_generator, run_story_writer,
-    run_web_search_tool, run_image_generator_tool, run_tts_tool, run_blog_outline, run_poem_writer,
+    run_image_generator_tool, run_tts_tool, run_blog_outline, run_poem_writer,
     parse_text_document_bytes, resolve_language,
     TOOL_CANCEL, MAX_TOOL_TEXT_FILE_BYTES,
 )
@@ -268,29 +268,12 @@ async def webhook(request: Request):
 
             if cb_data == "preferences_menu":
                 await answer_callback(cb_id)
-                tools_config = await get_user_tools(cid)
                 await edit_message(
                     cid,
                     mid,
-                    "⚙️ <b>User Preferences</b>\n\nConfigure bot preferences below:",
+                    "⚙️ <b>User Preferences</b>\n\nConfigure bot preferences below:\n<i>Built-in tools disabled — only function calling is active.</i>",
                     parse_mode="HTML",
-                    reply_markup=preferences_keyboard(tools_config),
-                )
-                return JSONResponse({"ok": True})
-
-            if cb_data == "pref_toggle_web_search":
-                await answer_callback(cb_id)
-                tools_config = await get_user_tools(cid)
-                tools_config["web_search"] = not tools_config.get("web_search", True)
-                await set_user_tools(cid, tools_config)
-                status = "ON" if tools_config["web_search"] else "OFF"
-                await answer_callback(cb_id, f"Web Search turned {status}")
-                await edit_message(
-                    cid,
-                    mid,
-                    "⚙️ <b>User Preferences</b>\n\nConfigure bot preferences below:",
-                    parse_mode="HTML",
-                    reply_markup=preferences_keyboard(tools_config),
+                    reply_markup=preferences_keyboard({}),
                 )
                 return JSONResponse({"ok": True})
 
@@ -344,9 +327,6 @@ async def webhook(request: Request):
                 elif tool_name == "tts_converter":
                     await set_state(cid, "tool:tts_converter")
                     await send_message(cid, "Send text to convert into speech audio.", reply_markup=TOOL_CANCEL)
-                elif tool_name == "web_search":
-                    await set_state(cid, "tool:web_search")
-                    await send_message(cid, "Send search query to search the web.", reply_markup=TOOL_CANCEL)
                 elif tool_name == "image_generator":
                     await set_state(cid, "tool:image_generator")
                     await send_message(cid, "Send detailed prompt to generate an AI image.", reply_markup=TOOL_CANCEL)
@@ -458,7 +438,6 @@ async def webhook(request: Request):
                     cid,
                     parts,
                     await get_system_text(name, cid),
-                    use_tools=False,
                 )
                 return JSONResponse({"ok": True})
 
@@ -916,10 +895,6 @@ async def webhook(request: Request):
                         await clear_state(cid)
                         await run_tts_tool(cid, text)
                         return JSONResponse({"ok": True})
-                    if st == "tool:web_search":
-                        await clear_state(cid)
-                        await run_web_search_tool(cid, text)
-                        return JSONResponse({"ok": True})
                     if st == "tool:image_generator":
                         await clear_state(cid)
                         await run_image_generator_tool(cid, text)
@@ -1146,7 +1121,6 @@ async def webhook(request: Request):
                 f"to deliver fast, accurate, and context-aware responses.\n\n"
                 f"<b>Here's what Sahana AI companion can do for you:</b>\n\n"
                 f"💬 <b>Natural Conversations</b> — Chat naturally on any topic\n"
-                f"🌐 <b>Real-time Web Search</b> — Get the most up-to-date information\n"
                 f"🎬 <b>YouTube Analysis</b> — Transcribe, summarize &amp; analyze videos\n"
                 f"🧾 <b>Text to PDF</b> — Create downloadable PDF files from your prompts\n"
                 f"🎨 <b>Image Generation</b> — Create stunning AI-generated images\n"
@@ -1395,7 +1369,6 @@ async def webhook(request: Request):
             cid,
             current_parts,
             await get_system_text(name, cid),
-            use_tools=not has_file,
             user_name=name,
         )
         return JSONResponse({"ok": True})

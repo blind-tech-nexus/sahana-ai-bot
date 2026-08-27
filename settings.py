@@ -155,8 +155,7 @@ def tools_keyboard() -> dict:
         [btn("✨ Text Refiner", "tool:text_refiner"), btn("🌐 Text Translator", "tool:text_translator")],
         [btn("📊 Text Analyzer", "tool:text_analyzer"), btn("📄 PDF Creator", "tool:pdf_creator")],
         [btn("🎙️ Audio Transcriber", "tool:audio_transcriber"), btn("🔊 Text to Speech", "tool:tts_converter")],
-        [btn("🔍 Web Search", "tool:web_search"), btn("🎨 Image Generator", "tool:image_generator")],
-        [btn("🚀 Advanced Tools", "advanced_tools_menu")],
+        [btn("🎨 Image Generator", "tool:image_generator"), btn("🚀 Advanced Tools", "advanced_tools_menu")],
         [btn("❌ Close", "tools_close")],
     ])
 
@@ -173,11 +172,9 @@ def advanced_tools_keyboard() -> dict:
         [btn("❌ Close", "tools_close")],
     ])
 
-def preferences_keyboard(tools_config: dict) -> dict:
-    """Generate keyboard for user tool preferences."""
-    ws_status = "✅ ON" if tools_config.get("web_search", True) else "❌ OFF"
+def preferences_keyboard(tools_config: dict = None) -> dict:
+    """User preferences — built-in tools removed, only functionDeclarations are used."""
     return ikb([
-        [btn(f"🔍 Web Search {ws_status}", "pref_toggle_web_search")],
         [btn("🔙 Back", "back_settings")],
     ])
 

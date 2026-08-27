@@ -49,7 +49,6 @@ async def handle_voice(cid: int, voice: dict, name: str) -> None:
         cid,
         current_parts,
         await get_system_text(name, cid),
-        use_tools=not has_file,
         user_name=name,
     )
 
