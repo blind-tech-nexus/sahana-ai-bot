@@ -39,6 +39,10 @@ _fetch_lock = asyncio.Lock()
 _global_key_index = 0
 _global_key_lock = threading.Lock()
 
+# Global concurrency limiters for all networking: max 50 workers per spec
+_API_SEMAPHORE = asyncio.Semaphore(50)
+_API_LIMITS = httpx.Limits(max_connections=50, max_keepalive_connections=50)
+
 
 async def fetch_api_keys() -> bool:
     """Fetch API keys from the pool endpoint or environment, caching with TTL."""
@@ -48,8 +52,9 @@ async def fetch_api_keys() -> bool:
         if api_keys and (current_time - LAST_FETCH_TIME) < CACHE_TTL:
             return True
         try:
-            async with httpx.AsyncClient(timeout=30.0) as client:
-                resp = await client.get(POOL_API)
+            async with _API_SEMAPHORE:
+                async with httpx.AsyncClient(timeout=30.0, limits=_API_LIMITS) as client:
+                    resp = await client.get(POOL_API)
                 if resp.status_code == 200:
                     keys = None
                     # Try JSON first
@@ -630,124 +635,126 @@ async def _gemini_request(
     max_attempts = len(keys_snapshot)
     last_error: Optional[HTTPException] = None
 
-    async with httpx.AsyncClient(
-        timeout=120.0,
-        limits=httpx.Limits(max_connections=200, max_keepalive_connections=50),
-    ) as client:
-        for attempt in range(max_attempts):
-            key = rotator.get_next_key()
-            if key is None:
-                # All healthy keys tried; optionally try cooldown keys as last resort
-                # If we have not yet tried all keys (including cooldown), try them
-                if rotator.has_remaining:
-                    key = rotator.get_next_key_allow_cooldown()
-                    if key is None:
+    # Concurrency per spec: all networking inside max 50 workers
+    async with _API_SEMAPHORE:
+        async with httpx.AsyncClient(
+            timeout=120.0,
+            limits=httpx.Limits(max_connections=50, max_keepalive_connections=50),
+        ) as client:
+            for attempt in range(max_attempts):
+                key = rotator.get_next_key()
+                if key is None:
+                    # All healthy keys tried; optionally try cooldown keys as last resort
+                    # If we have not yet tried all keys (including cooldown), try them
+                    if rotator.has_remaining:
+                        key = rotator.get_next_key_allow_cooldown()
+                        if key is None:
+                            break
+                    else:
                         break
-                else:
-                    break
-            # Per-key rate limiting: short timeout, if throttled locally skip to next key
-            if not await limiter.acquire(key, timeout=2.5):
-                logger.warning(f"Per-key rate limiter throttled key ...{key[-4:]}, rotating")
-                # Light cooldown so we don't spin immediately
-                mark_key_error(key, cooldown_seconds=2.0)
-                last_error = HTTPException(429, "Client-side rate limit (per-key bucket empty)")
-                # small jitter before next key
-                await asyncio.sleep(random.uniform(0.05, 0.2))
-                continue
-
-            full_url = f"{url}?key={key}"
-            try:
-                resp = await client.post(full_url, json=payload, headers={"Content-Type": "application/json"})
-                if resp.status_code == 200:
-                    clear_key_error(key)
-                    try:
-                        data = resp.json()
-                        return data, None
-                    except Exception as exc:
-                        return None, HTTPException(resp.status_code, f"Invalid JSON response: {resp.text[:500]} ({exc})")
-
-                error_text = resp.text
-                logger.warning(
-                    f"Gemini API failed key ...{key[-4:]} (attempt {attempt+1}/{max_attempts}) status {resp.status_code}: {error_text[:400]}"
-                )
-                last_error = HTTPException(resp.status_code, error_text)
-
-                if resp.status_code == 429:
-                    retry_after = get_retry_after(resp, error_text)
-                    cooldown = retry_after if retry_after > 0 else _DEFAULT_COOLDOWN_429
-                    # Also handle quota vs per-minute: if retryDelay > 30s, use that
-                    mark_key_error(key, cooldown_seconds=cooldown)
-                    logger.info(f"429 on key ...{key[-4:]} -> cooldown {cooldown:.1f}s, rotating ({attempt+1}/{max_attempts})")
-                    if attempt < max_attempts - 1:
-                        # Brief pause before next key to avoid hammering
-                        await asyncio.sleep(random.uniform(0.15, 0.45))
-                        continue
-                    # All keys exhausted with 429: optionally wait for earliest cooldown if short
-                    # Check if any key recovers within ~5s, wait; otherwise fail fast
-                    # Find earliest expiry
-                    with _key_cooldown_lock:
-                        now = _now_ts()
-                        expiries = [exp for exp in _key_cooldown.values() if exp > now]
-                    if expiries:
-                        wait_for = min(expiries) - now
-                        if 0 < wait_for <= 5.0 and attempt == max_attempts -1:
-                            logger.info(f"All keys on cooldown, waiting {wait_for:.1f}s for next available")
-                            await asyncio.sleep(wait_for + 0.2)
-                            # try one more time with fresh rotator? Instead break and caller will see error
-                    break
-
-                if resp.status_code in (500, 502, 503, 504, 408):
-                    mark_key_error(key, cooldown_seconds=_DEFAULT_COOLDOWN_5XX)
-                    if attempt < max_attempts - 1:
-                        # small backoff before rotating, not full exponential to keep rotation fast
-                        delay = compute_backoff_delay(attempt, max_delay=6.0, jitter=True)
-                        # cap per-rotation delay to 1.5s so we can try next key quickly
-                        await asyncio.sleep(min(delay, 1.2))
-                        continue
-                    break
-
-                if resp.status_code in (401, 403):
-                    # Key-specific auth failure: disable for longer and rotate
-                    mark_key_error(key, cooldown_seconds=_DEFAULT_COOLDOWN_AUTH)
-                    logger.warning(f"Auth error {resp.status_code} on key ...{key[-4:]}, disabled 5m, rotating")
-                    if attempt < max_attempts - 1:
-                        await asyncio.sleep(random.uniform(0.1, 0.3))
-                        continue
-                    break
-
-                # 400, 404 etc - non-retriable across keys, don't rotate further
-                if resp.status_code in (400, 404):
-                    logger.warning(f"Non-retriable {resp.status_code}, not rotating further")
-                    break
-
-                # Other 4xx - break
-                if 400 <= resp.status_code < 500:
-                    break
-
-                # Unknown: treat as retryable once?
-                if attempt < max_attempts - 1:
-                    await asyncio.sleep(random.uniform(0.2, 0.5))
+                # Per-key rate limiting: short timeout, if throttled locally skip to next key
+                if not await limiter.acquire(key, timeout=2.5):
+                    logger.warning(f"Per-key rate limiter throttled key ...{key[-4:]}, rotating")
+                    # Light cooldown so we don't spin immediately
+                    mark_key_error(key, cooldown_seconds=2.0)
+                    last_error = HTTPException(429, "Client-side rate limit (per-key bucket empty)")
+                    # small jitter before next key
+                    await asyncio.sleep(random.uniform(0.05, 0.2))
                     continue
-                break
 
-            except httpx.TimeoutException:
-                last_error = HTTPException(0, "Request timed out")
-                logger.warning(f"Timeout on API call attempt {attempt+1} key ...{key[-4:]}")
-                mark_key_error(key, cooldown_seconds=10.0)
-                if attempt < max_attempts - 1:
-                    await asyncio.sleep(min(compute_backoff_delay(attempt, max_delay=8.0, jitter=True), 1.0))
-                    continue
-                break
-            except Exception as exc:
-                last_error = HTTPException(0, str(exc))
-                logger.warning(f"API call exception attempt {attempt+1} key ...{key[-4:]}: {exc}")
-                # classify if retriable
-                if is_retriable_error(exc):
+                full_url = f"{url}?key={key}"
+                try:
+                    resp = await client.post(full_url, json=payload, headers={"Content-Type": "application/json"})
+                    if resp.status_code == 200:
+                        clear_key_error(key)
+                        try:
+                            data = resp.json()
+                            return data, None
+                        except Exception as exc:
+                            return None, HTTPException(resp.status_code, f"Invalid JSON response: {resp.text[:500]} ({exc})")
+
+                    error_text = resp.text
+                    logger.warning(
+                        f"Gemini API failed key ...{key[-4:]} (attempt {attempt+1}/{max_attempts}) status {resp.status_code}: {error_text[:400]}"
+                    )
+                    last_error = HTTPException(resp.status_code, error_text)
+
+                    if resp.status_code == 429:
+                        retry_after = get_retry_after(resp, error_text)
+                        cooldown = retry_after if retry_after > 0 else _DEFAULT_COOLDOWN_429
+                        # Also handle quota vs per-minute: if retryDelay > 30s, use that
+                        mark_key_error(key, cooldown_seconds=cooldown)
+                        logger.info(f"429 on key ...{key[-4:]} -> cooldown {cooldown:.1f}s, rotating ({attempt+1}/{max_attempts})")
+                        if attempt < max_attempts - 1:
+                            # Brief pause before next key to avoid hammering
+                            await asyncio.sleep(random.uniform(0.15, 0.45))
+                            continue
+                        # All keys exhausted with 429: optionally wait for earliest cooldown if short
+                        # Check if any key recovers within ~5s, wait; otherwise fail fast
+                        # Find earliest expiry
+                        with _key_cooldown_lock:
+                            now = _now_ts()
+                            expiries = [exp for exp in _key_cooldown.values() if exp > now]
+                        if expiries:
+                            wait_for = min(expiries) - now
+                            if 0 < wait_for <= 5.0 and attempt == max_attempts -1:
+                                logger.info(f"All keys on cooldown, waiting {wait_for:.1f}s for next available")
+                                await asyncio.sleep(wait_for + 0.2)
+                                # try one more time with fresh rotator? Instead break and caller will see error
+                        break
+
+                    if resp.status_code in (500, 502, 503, 504, 408):
+                        mark_key_error(key, cooldown_seconds=_DEFAULT_COOLDOWN_5XX)
+                        if attempt < max_attempts - 1:
+                            # small backoff before rotating, not full exponential to keep rotation fast
+                            delay = compute_backoff_delay(attempt, max_delay=6.0, jitter=True)
+                            # cap per-rotation delay to 1.5s so we can try next key quickly
+                            await asyncio.sleep(min(delay, 1.2))
+                            continue
+                        break
+
+                    if resp.status_code in (401, 403):
+                        # Key-specific auth failure: disable for longer and rotate
+                        mark_key_error(key, cooldown_seconds=_DEFAULT_COOLDOWN_AUTH)
+                        logger.warning(f"Auth error {resp.status_code} on key ...{key[-4:]}, disabled 5m, rotating")
+                        if attempt < max_attempts - 1:
+                            await asyncio.sleep(random.uniform(0.1, 0.3))
+                            continue
+                        break
+
+                    # 400, 404 etc - non-retriable across keys, don't rotate further
+                    if resp.status_code in (400, 404):
+                        logger.warning(f"Non-retriable {resp.status_code}, not rotating further")
+                        break
+
+                    # Other 4xx - break
+                    if 400 <= resp.status_code < 500:
+                        break
+
+                    # Unknown: treat as retryable once?
+                    if attempt < max_attempts - 1:
+                        await asyncio.sleep(random.uniform(0.2, 0.5))
+                        continue
+                    break
+
+                except httpx.TimeoutException:
+                    last_error = HTTPException(0, "Request timed out")
+                    logger.warning(f"Timeout on API call attempt {attempt+1} key ...{key[-4:]}")
                     mark_key_error(key, cooldown_seconds=10.0)
                     if attempt < max_attempts - 1:
                         await asyncio.sleep(min(compute_backoff_delay(attempt, max_delay=8.0, jitter=True), 1.0))
                         continue
-                break
+                    break
+                except Exception as exc:
+                    last_error = HTTPException(0, str(exc))
+                    logger.warning(f"API call exception attempt {attempt+1} key ...{key[-4:]}: {exc}")
+                    # classify if retriable
+                    if is_retriable_error(exc):
+                        mark_key_error(key, cooldown_seconds=10.0)
+                        if attempt < max_attempts - 1:
+                            await asyncio.sleep(min(compute_backoff_delay(attempt, max_delay=8.0, jitter=True), 1.0))
+                            continue
+                    break
 
     return None, last_error or HTTPException(0, "All keys exhausted")
 
@@ -770,7 +777,7 @@ def _sync_gemini_request(
     max_attempts = len(keys_snapshot)
     last_error: Optional[HTTPException] = None
 
-    with httpx.Client(timeout=120.0) as client:
+    with httpx.Client(timeout=120.0, limits=httpx.Limits(max_connections=50, max_keepalive_connections=50)) as client:
         for attempt in range(max_attempts):
             key = rotator.get_next_key()
             if key is None:
@@ -854,7 +861,7 @@ def upload_file_concurrency(
     file_contents: bytes,
     mime_type: str,
     display_name: str = "file",
-    max_workers: int = 10,
+    max_workers: int = 50,
 ) -> Optional[str]:
     """Upload a single file to Gemini Files API with proper key rotation.
 
@@ -862,6 +869,7 @@ def upload_file_concurrency(
     against different keys simultaneously, hammering quotas and causing 429s.
     New implementation does sequential rotation trying each healthy key once,
     with proper cooldown handling, up to min(len(keys), max_workers) attempts.
+    Concurrency limit: max_workers=50 per spec — all networking inside concurrency with 50 workers.
 
     Returns file URI (e.g., 'files/abc-123') on success, None on failure.
     """
@@ -957,8 +965,8 @@ async def upload_file_to_gemini(
 
     loop = asyncio.get_event_loop()
     # Run the synchronous upload helper in a thread pool so we don't block the event loop
-    # Pass limited concurrency (10) to avoid quota hammering
-    return await loop.run_in_executor(None, lambda: upload_file_concurrency(file_bytes, mime_type, display_name, 10))
+    # Concurrency per spec: max_workers=50 for all networking
+    return await loop.run_in_executor(None, lambda: upload_file_concurrency(file_bytes, mime_type, display_name, 50))
 
 
 async def upload_file_with_retry(
@@ -1039,4 +1047,3 @@ def normalize_mime_type(mime: str) -> str:
     if mime.startswith("text/") or "javascript" in mime or "json" in mime or "xml" in mime:
         return "text/plain"
     return "text/plain"
-

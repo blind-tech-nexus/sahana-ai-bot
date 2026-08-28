@@ -128,6 +128,70 @@ async def save_memory(cid: int, memory: str) -> bool:
         return False
 
 
+async def save_memories_batch(cid: int, memories: list[str]) -> dict:
+    """Save multiple memories at once, deduplicated case-insensitively.
+
+    Returns dict with counts: {saved: int, duplicates: int, failed: int, total: int, saved_items: list, duplicate_items: list}
+    Bulk operation uses pipeline-style dedup and respects 50 limit via trim.
+    """
+    if not memories or not isinstance(memories, list):
+        return {"saved": 0, "duplicates": 0, "failed": 0, "total": 0, "saved_items": [], "duplicate_items": []}
+    # Clean and filter
+    cleaned_list: list[str] = []
+    for m in memories:
+        if m is None:
+            continue
+        cm = str(m).strip()
+        if not cm:
+            continue
+        if len(cm) > 1000:
+            cm = cm[:1000].strip()
+        if cm:
+            cleaned_list.append(cm)
+    if not cleaned_list:
+        return {"saved": 0, "duplicates": 0, "failed": 0, "total": 0, "saved_items": [], "duplicate_items": []}
+    # Also handle case where single string contains newline/semicolon separated? Keep as is — model should send array
+    try:
+        existing = await get_memories(cid)
+        existing_lower = {m.lower() for m in existing}
+        # Dedup within incoming list case-insensitively preserving first occurrence
+        seen_lower: set[str] = set()
+        deduped: list[str] = []
+        duplicates: list[str] = []
+        for cm in cleaned_list:
+            low = cm.lower()
+            if low in existing_lower or low in seen_lower:
+                duplicates.append(cm)
+                continue
+            seen_lower.add(low)
+            deduped.append(cm)
+        saved_items: list[str] = []
+        failed = 0
+        for cm in deduped:
+            try:
+                await r.rpush(mk(cid), cm)
+                saved_items.append(cm)
+            except Exception:
+                failed += 1
+        # Trim to 50
+        try:
+            cur_len = await r.llen(mk(cid))
+            if cur_len > 50:
+                await r.ltrim(mk(cid), cur_len - 50, -1)
+        except Exception:
+            pass
+        return {
+            "saved": len(saved_items),
+            "duplicates": len(duplicates),
+            "failed": failed,
+            "total": len(cleaned_list),
+            "saved_items": saved_items,
+            "duplicate_items": duplicates,
+        }
+    except Exception:
+        return {"saved": 0, "duplicates": 0, "failed": len(cleaned_list), "total": len(cleaned_list), "saved_items": [], "duplicate_items": []}
+
+
 async def clear_memories(cid: int) -> None: await r.delete(mk(cid))
 async def get_user_voice(cid: int) -> str:
     from config import DEFAULT_TTS_VOICE

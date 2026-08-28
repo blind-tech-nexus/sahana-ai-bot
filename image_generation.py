@@ -1,8 +1,12 @@
 import urllib.parse
 import httpx
+import asyncio
 from database import save_message
 from message import send_message, send_photo
 from settings import ikb, btn
+
+_IMAGE_SEMAPHORE = asyncio.Semaphore(50)
+_IMAGE_LIMITS = httpx.Limits(max_connections=50, max_keepalive_connections=50)
 
 
 async def execute_image(cid: int, query: str, name: str, announce: bool = True) -> bool:
@@ -11,8 +15,9 @@ async def execute_image(cid: int, query: str, name: str, announce: bool = True) 
     encoded_prompt = urllib.parse.quote(query)
     image_api_url = f"https://yabes-api.pages.dev/api/ai/image/dalle?prompt={encoded_prompt}"
     try:
-        async with httpx.AsyncClient(timeout=60.0) as client:
-            resp = await client.get(image_api_url)
+        async with _IMAGE_SEMAPHORE:
+            async with httpx.AsyncClient(timeout=60.0, limits=_IMAGE_LIMITS) as client:
+                resp = await client.get(image_api_url)
             if resp.status_code == 200:
                 data = resp.json()
                 if data.get("success") and "output" in data:

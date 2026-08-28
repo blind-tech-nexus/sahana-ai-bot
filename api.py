@@ -13,7 +13,7 @@ from api_keys import (
     is_key_on_cooldown, mark_key_error, clear_key_error,
     compute_backoff_delay, get_rate_limiter,
 )
-from database import get_recent_history, save_message, get_user_temp, save_memory, get_memories, get_user_model, format_memories_block, get_formatted_memories
+from database import get_recent_history, save_message, get_user_temp, save_memory, save_memories_batch, get_memories, get_user_model, format_memories_block, get_formatted_memories
 from markdown_parse import markdown_to_html, escape_html
 from message import send_message, send_chat_action
 
@@ -21,7 +21,7 @@ logger = logging.getLogger("mero.api")
 MAX_OUTPUT_TOKENS = 64000
 MAX_INLINE_FILE_BYTES = 2 * 1024 * 1024  # 2MB threshold for Files API
 MAX_FUNCTION_CALL_TURNS = 6
-MAX_CONCURRENT_WORKERS = 10
+MAX_CONCURRENT_WORKERS = 50
 
 # Strict, vast system instruction for the dedicated web_search helper model (gemini-2.5-flash + google_search)
 WEB_SEARCH_SYSTEM_INSTRUCTION = (
@@ -52,7 +52,7 @@ WEB_SEARCH_SYSTEM_INSTRUCTION = (
 FUNCTION_DECLARATIONS = [
     {
         "name": "save_memory",
-        "description": "Save an important piece of information, fact, preference, or detail about the user to long-term memory for future reference. Use when user shares personal facts like name, age, location, birthday, profession, hobbies, goals, likes/dislikes, or says 'remember this'.",
+        "description": "Save important personal facts, preferences, or details about the user to long-term memory for future recall. Use when user shares ANY durable personal info — name, age, location, birthday, profession, hobbies, goals, likes/dislikes, projects, or says 'remember this'. SUPPORTS BULK: you can save multiple distinct facts in a single call via `memories` array (preferred when user shares 2+ facts). Each array element must be one concise, self-contained fact (e.g., 'User name is Sujan Rai', 'User lives in Dhankuta district, Nepal', 'User works at an engineering company'). If only one fact, you may use `memory` string. Use EITHER `memory` (single) OR `memories` (array) — `memories` is preferred for multiple facts to prevent multiple tool calls. After saving, you MUST still directly answer the user's original request (e.g., provide requested Python code) in your final response — do NOT stop after saving.",
         "parameters": {
             "type": "object",
             "properties": {
@@ -62,10 +62,17 @@ FUNCTION_DECLARATIONS = [
                 },
                 "memory": {
                     "type": "string",
-                    "description": "The important information to save about the user. Concise, self-contained fact (e.g., 'User is a Python developer from Nepal')."
+                    "description": "Single memory to save (concise fact, e.g., 'User is a Python developer from Nepal'). Use when only ONE fact to save. Ignored if `memories` is provided."
+                },
+                "memories": {
+                    "type": "array",
+                    "description": "Array of memory strings to save in bulk — PREFERRED when user shares 2+ distinct facts. Each element is one concise, self-contained fact. Example: ['User name is Sujan Rai', 'User lives in Dhankuta, Nepal', 'User works at an engineering company']. Max 10 per call, each <=1000 chars.",
+                    "items": {
+                        "type": "string"
+                    }
                 }
             },
-            "required": ["user_id", "memory"]
+            "required": ["user_id"]
         }
     },
     {
@@ -399,7 +406,7 @@ def format_response_with_sources(ai_text: str, sources: list[dict] = None) -> st
 # =============================================================================
 # WEB_SEARCH FUNCTION — Dedicated helper using gemini-2.5-flash + google_search
 # Architecture: main model -> web_search(query) -> gemini-2.5-flash(google_search) -> formatted_ai_response + formatted_sources -> main model -> final answer
-# All API calls use concurrent pool with max_workers=10 via ThreadPoolExecutor / asyncio semaphore
+# All API calls use concurrent pool with max_workers=50 via ThreadPoolExecutor / asyncio semaphore
 # =============================================================================
 
 async def web_search(query: str, cid: int = 0) -> dict:
@@ -410,7 +417,7 @@ async def web_search(query: str, cid: int = 0) -> dict:
     Returns dict with `formatted_output = f\"{formatted_ai_response}\\n{formatted_sources}\\n\"`
     pronounced exactly as required, ready to be returned to the main model.
 
-    Concurrency: executed via the shared API pool (max_workers=10 internally via key rotation + rate limiter).
+    Concurrency: executed via the shared API pool (max_workers=50 internally via key rotation + rate limiter).
     """
     query_clean = (query or "").strip()
     if not query_clean:
@@ -475,25 +482,88 @@ async def _execute_function(cid: int, func_name: str, args: dict, user_name: str
     All functions are designed to work very correctly and be concurrency-safe.
     """
     try:
-        # --- SAVE MEMORY ---
+        # --- SAVE MEMORY — BULK CAPABLE ---
         if func_name == "save_memory":
-            memory_text = (args.get("memory") or "").strip()
             uid = args.get("user_id", cid)
             try:
                 uid_int = int(uid)
             except Exception:
                 uid_int = cid
-            if not memory_text:
-                return {"status": "error", "message": "Memory text is required and cannot be empty."}
-            saved = await save_memory(uid_int, memory_text)
-            if saved:
-                return {"status": "success", "message": f"Memory saved successfully: {memory_text}", "memory": memory_text, "user_id": uid_int}
+            # Support both `memory` (single string) and `memories` (array) — bulk path preferred
+            memories_arg = args.get("memories")
+            memory_text = (args.get("memory") or "").strip() if isinstance(args.get("memory"), str) else ""
+            batch: list[str] = []
+            if isinstance(memories_arg, list) and memories_arg:
+                for item in memories_arg:
+                    if item is None:
+                        continue
+                    s = str(item).strip()
+                    if s:
+                        batch.append(s)
+            if memory_text:
+                batch.append(memory_text)
+            # Also handle legacy comma/newline delimited single string that actually contains multiple facts?
+            # We keep as single unless array given; model instructed to use array for multiples.
+            if not batch:
+                return {"status": "error", "message": "Memory text is required: provide `memory` (string) or `memories` (array of strings). Each fact should be concise."}
+            # Deduplicate within batch case-insensitively before saving (preserve order)
+            seen = set()
+            deduped_batch: list[str] = []
+            for m in batch:
+                low = m.lower()
+                if low not in seen:
+                    seen.add(low)
+                    deduped_batch.append(m)
+            if len(deduped_batch) == 1:
+                # Single-memory path — keep simple response for backward compat
+                single = deduped_batch[0]
+                saved = await save_memory(uid_int, single)
+                if saved:
+                    return {"status": "success", "message": f"Memory saved successfully: {single}", "memory": single, "memories": [single], "user_id": uid_int, "saved_count": 1}
+                else:
+                    memories = await get_memories(uid_int)
+                    if any(single.lower() == mm.lower() for mm in memories):
+                        return {"status": "success", "message": f"Memory already exists (duplicate not saved): {single}", "memory": single, "memories": [single], "user_id": uid_int, "saved_count": 0, "duplicate": True}
+                    return {"status": "error", "message": "Failed to save memory (storage error).", "memory": single}
+            # Bulk path: save N memories concurrently via batch helper
+            result = await save_memories_batch(uid_int, deduped_batch)
+            saved_items = result.get("saved_items", [])
+            dup_items = result.get("duplicate_items", [])
+            total = result.get("total", 0)
+            saved_cnt = result.get("saved", 0)
+            dup_cnt = result.get("duplicates", 0)
+            if saved_cnt > 0:
+                # Build concise but informative message that does NOT mislead main model to stop
+                msg = f"Memories updated: {saved_cnt}/{total} new saved"
+                if dup_cnt:
+                    msg += f", {dup_cnt} duplicates skipped"
+                msg += f". Saved: {', '.join(saved_items[:5])}{'...' if len(saved_items) > 5 else ''}"
+                # CRITICAL: instruct main model to continue original task
+                msg += " — Now continue and fully answer the user's original request using these saved facts where relevant."
+                return {
+                    "status": "success",
+                    "message": msg,
+                    "memories": saved_items,
+                    "saved_items": saved_items,
+                    "duplicate_items": dup_items,
+                    "user_id": uid_int,
+                    "saved_count": saved_cnt,
+                    "duplicate_count": dup_cnt,
+                    "total": total,
+                }
             else:
-                # Either duplicate or failed; check if duplicate
-                memories = await get_memories(uid_int)
-                if any(memory_text.lower() == m.lower() for m in memories):
-                    return {"status": "success", "message": f"Memory already exists (duplicate not saved): {memory_text}", "memory": memory_text, "user_id": uid_int}
-                return {"status": "error", "message": "Failed to save memory (storage error)."}
+                # All duplicates
+                if dup_cnt > 0 and result.get("failed", 0) == 0:
+                    return {
+                        "status": "success",
+                        "message": f"All {dup_cnt} memories already existed (duplicates not saved). Continue answering the user's original request.",
+                        "memories": deduped_batch,
+                        "duplicate_items": dup_items,
+                        "user_id": uid_int,
+                        "saved_count": 0,
+                        "duplicate_count": dup_cnt,
+                    }
+                return {"status": "error", "message": "Failed to save memories (storage error).", "memories": deduped_batch}
         
         # --- LOAD MEMORY ---
         elif func_name == "load_memory":
@@ -565,7 +635,7 @@ async def _execute_function(cid: int, func_name: str, args: dict, user_name: str
 
 
 async def _execute_functions_concurrently(cid: int, function_calls: list[dict], user_name: str = "User") -> list[dict]:
-    """Execute multiple function calls concurrently with max_workers=10.
+    """Execute multiple function calls concurrently with max_workers=50.
 
     Uses asyncio.gather with semaphore to limit concurrency to MAX_CONCURRENT_WORKERS.
     Preserves order of results to match input order (required for functionResponse mapping).
@@ -609,7 +679,7 @@ async def _send_function_response(cid: int, model: str, body: dict, function_cal
         fc_parts.append(part)
     contents.append({"role": "model", "parts": fc_parts})
     
-    # Execute all functions concurrently with max_workers=10
+    # Execute all functions concurrently with max_workers=50
     fr_parts = await _execute_functions_concurrently(cid, function_calls, user_name=user_name)
     contents.append({"role": "user", "parts": fr_parts})
     
@@ -620,16 +690,38 @@ async def _send_function_response(cid: int, model: str, body: dict, function_cal
     data, err = await try_api_call(model, follow_up)
     if not data:
         # If follow-up fails, return the function results as fallback so user still gets value
+        # CRITICAL FIX: prioritize detailed outputs (formatted_output/results/formatted) over bare message
+        # so user gets actual search results / loaded memories, not just "Web search completed successfully"
         logger.warning(f"_send_function_response follow-up failed cid={cid} err={err}")
-        # Try to extract meaningful fallback from function results
         try:
             messages = []
             for part in fr_parts:
                 resp = part.get("functionResponse", {}).get("response", {})
-                msg = resp.get("message") or resp.get("formatted_output") or ""
+                fname = part.get("functionResponse", {}).get("name", "")
+                # Priority order: detailed content first, then generic message
+                # For web_search: formatted_output / combined / results
+                # For load_memory: formatted
+                # For save_memory: message (which already contains saved items summary)
+                msg = (
+                    resp.get("formatted_output")
+                    or resp.get("combined")
+                    or resp.get("results")
+                    or resp.get("formatted")
+                    or resp.get("message")
+                    or ""
+                )
                 if msg:
-                    messages.append(msg)
-            fallback = "\n\n".join(messages) if messages else "I finished the requested tool actions, but couldn't generate a final summary. Please check the results above."
+                    # For web_search, msg already contains full formatted_ai_response + sources; wrap nicely
+                    if fname == "web_search" and resp.get("status") == "success" and resp.get("formatted_output"):
+                        messages.append(msg)
+                    elif fname == "load_memory" and resp.get("formatted"):
+                        messages.append(f"🧠 Loaded memories:\n{resp.get('formatted')}")
+                    elif fname == "save_memory" and resp.get("status") == "success":
+                        # Include save confirmation — but also note we couldn't generate final answer
+                        messages.append(msg + "\n\n⚠️ Final synthesis failed due to API limit — please retry your original request and I'll include these memories in the answer.")
+                    else:
+                        messages.append(msg)
+            fallback = "\n\n---\n\n".join(messages) if messages else "I finished the requested tool actions, but couldn't generate a final summary due to a temporary API issue. Please retry your request in a few seconds."
             return fallback
         except Exception:
             return None
