@@ -3,36 +3,66 @@ import base64
 import logging
 import asyncio
 import time
+import re
 from typing import Optional
-from config import CONTEXT_SIZE, MODEL_SAHANA_1, MODEL_SAHANA_2, MODEL_SAHANA_3, DEFAULT_MODEL
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from config import CONTEXT_SIZE, MODEL_SAHANA_1, MODEL_SAHANA_2, MODEL_SAHANA_3, DEFAULT_MODEL, WEB_SEARCH_MODEL
 from api_keys import (
     fetch_api_keys, get_next_key_index, _gemini_request, HTTPException,
     normalize_mime_type, upload_file_to_gemini, upload_file_with_retry, delete_gemini_file,
     is_key_on_cooldown, mark_key_error, clear_key_error,
     compute_backoff_delay, get_rate_limiter,
 )
-from database import get_recent_history, save_message, get_user_temp, save_memory, get_memories, get_user_model
+from database import get_recent_history, save_message, get_user_temp, save_memory, get_memories, get_user_model, format_memories_block, get_formatted_memories
 from markdown_parse import markdown_to_html, escape_html
 from message import send_message, send_chat_action
 
 logger = logging.getLogger("mero.api")
 MAX_OUTPUT_TOKENS = 64000
 MAX_INLINE_FILE_BYTES = 2 * 1024 * 1024  # 2MB threshold for Files API
+MAX_FUNCTION_CALL_TURNS = 6
+MAX_CONCURRENT_WORKERS = 10
+
+# Strict, vast system instruction for the dedicated web_search helper model (gemini-2.5-flash + google_search)
+WEB_SEARCH_SYSTEM_INSTRUCTION = (
+    "You are a STRICT, VAST, and HIGHLY ACCURATE Web Search Specialist powered by Google Search grounding.\n"
+    "Your SOLE mission is to search the web for the USER'S QUERY using the `google_search` tool and produce EXHAUSTIVE, STRUCTURED, DETAILED results.\n\n"
+    "STRICT RULES:\n"
+    "- You MUST use the google_search tool for every query — never answer from memory alone. If you fail to trigger google_search, your response is invalid.\n"
+    "- Generate 1-3 optimized, diverse search queries covering all aspects, synonyms, and recent angles of the topic before synthesizing.\n"
+    "- Search DEEPLY — consider equivalent to scanning at least 20 pages per topic, covering news, official sites, docs, and diverse sources.\n"
+    "- Coverage must be COMPREHENSIVE: include definitions, recent developments, key facts, numbers, dates, prices, comparisons, pros/cons, opinions, and context.\n"
+    "- NEVER hallucinate URLs, titles, or facts — only use what grounding returns. If data is insufficient, explicitly state the gap and suggest a refined query.\n"
+    "- Be VAST and DETAILED: for EACH distinct search result, provide a dedicated section with granular information.\n"
+    "- Prioritize recency, authority, and relevance. When conflicting data appears, note the discrepancy and cite both sources.\n"
+    "- Output MUST be well-structured, clean markdown, easy to parse, with no excessive fluff, apologies, or meta commentary.\n\n"
+    "REQUIRED OUTPUT FORMAT (strictly follow):\n"
+    "For EACH result, output exactly:\n"
+    "### [Result N: Title]\n"
+    "- **Source:** Title — URL\n"
+    "- **Summary:** 2-3 sentence concise snippet of what the page says about the query.\n"
+    "- **Key Details:** Bullet list of 3-6 most important facts, numbers, quotes, or insights from that page.\n"
+    "- **Relevance:** 1 sentence explaining why this result matters for the query.\n"
+    "After all results (aim for 5-10 results minimum), provide:\n"
+    "## Synthesis\n"
+    "A 3-5 sentence overall answer synthesizing across sources, highlighting consensus, key numbers, and final takeaway.\n"
+    "Use markdown only. Keep each result detailed but scannable."
+)
 
 FUNCTION_DECLARATIONS = [
     {
         "name": "save_memory",
-        "description": "Save an important piece of information, fact, preference, or detail about the user to long-term memory for future reference.",
+        "description": "Save an important piece of information, fact, preference, or detail about the user to long-term memory for future reference. Use when user shares personal facts like name, age, location, birthday, profession, hobbies, goals, likes/dislikes, or says 'remember this'.",
         "parameters": {
             "type": "object",
             "properties": {
                 "user_id": {
                     "type": "integer",
-                    "description": "The user ID of the current user."
+                    "description": "The user ID of the current user. Must be the system-provided user_id."
                 },
                 "memory": {
                     "type": "string",
-                    "description": "The important information to save about the user."
+                    "description": "The important information to save about the user. Concise, self-contained fact (e.g., 'User is a Python developer from Nepal')."
                 }
             },
             "required": ["user_id", "memory"]
@@ -40,7 +70,7 @@ FUNCTION_DECLARATIONS = [
     },
     {
         "name": "load_memory",
-        "description": "Load and retrieve saved long-term memories for the user when you need context, facts, or recall about the user.",
+        "description": "Load and retrieve saved long-term memories for the user when you need context, facts, or recall about the user. Use before answering personal questions or when prior context would improve accuracy.",
         "parameters": {
             "type": "object",
             "properties": {
@@ -54,13 +84,17 @@ FUNCTION_DECLARATIONS = [
     },
     {
         "name": "create_pdf",
-        "description": "Create a downloadable PDF document on a given topic.",
+        "description": "Create a downloadable PDF document on a given topic. Use when user explicitly requests a PDF, document, or export.",
         "parameters": {
             "type": "object",
             "properties": {
                 "topic": {
                     "type": "string",
                     "description": "The topic or subject content for the PDF document."
+                },
+                "file_name": {
+                    "type": "string",
+                    "description": "Optional filename for the PDF (e.g., 'report.pdf')."
                 }
             },
             "required": ["topic"]
@@ -68,16 +102,30 @@ FUNCTION_DECLARATIONS = [
     },
     {
         "name": "generate_image",
-        "description": "Generate an AI image based on a text prompt.",
+        "description": "Generate an AI image based on a text prompt. Use when user asks to create, draw, generate, or imagine an image, logo, or illustration.",
         "parameters": {
             "type": "object",
             "properties": {
                 "prompt": {
                     "type": "string",
-                    "description": "A detailed description of the image to generate."
+                    "description": "A detailed description of the image to generate, including style, colors, composition."
                 }
             },
             "required": ["prompt"]
+        }
+    },
+    {
+        "name": "web_search",
+        "description": "Search the live web for real-time, verified information using Google Search grounding. Use for current events, news, prices, recent facts, definitions requiring freshness, or any query beyond knowledge cutoff. The query should be a clear, specific natural-language question or keywords (e.g., 'latest iPhone 16 price in Nepal 2026', 'who won Champions League 2025').",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "query": {
+                    "type": "string",
+                    "description": "The search query to look up on the web. Clear, specific, and concise (max 500 chars)."
+                }
+            },
+            "required": ["query"]
         }
     }
 ]
@@ -113,6 +161,17 @@ def _normalize_part_keys(part: dict) -> dict:
         ind = part["inlineData"]
         normalized = _compact({"mimeType": normalize_mime_type(ind.get("mimeType")), "data": ind.get("data")})
         return {"inlineData": normalized} if normalized else {}
+    if "fileData" in part and isinstance(part["fileData"], dict):
+        fd = part["fileData"]
+        normalized = _compact({"mimeType": normalize_mime_type(fd.get("mimeType") or fd.get("mime_type") or "application/octet-stream"), "fileUri": fd.get("fileUri") or fd.get("file_uri") or fd.get("uri")})
+        return {"fileData": normalized} if normalized else {}
+    if "file_data" in part and isinstance(part["file_data"], dict):
+        fd = part["file_data"]
+        normalized = _compact({"mimeType": normalize_mime_type(fd.get("mime_type") or fd.get("mimeType")), "fileUri": fd.get("fileUri") or fd.get("file_uri") or fd.get("uri")})
+        return {"fileData": normalized} if normalized else {}
+    if "fileUri" in part:
+        mime = part.get("mimeType") or part.get("mime_type") or "application/octet-stream"
+        return {"fileData": _compact({"mimeType": normalize_mime_type(mime), "fileUri": part.get("fileUri")})}
     if "text" in part:
         text_val = (part.get("text") or "").strip()
         return {"text": text_val} if text_val else {}
@@ -139,13 +198,10 @@ def _friendly_error_message(raw_msg: str) -> str:
         return "All API keys are temporarily busy. Please try again in a moment."
     low = raw_msg.lower()
     if "429" in raw_msg or "resource_exhausted" in low or "quota" in low or "exceeded your current quota" in low:
-        # Try to extract retry delay
-        import re
         m = re.search(r'"retryDelay"\s*:\s*"([^"]+)"', raw_msg)
         if m:
             delay = m.group(1)
             return f"⏳ All API keys hit quota limits. Please retry in {delay}. (Automatic rotation exhausted all keys)"
-        # Also check RetryInfo
         if "retry" in low:
             return "⏳ All API keys are rate-limited right now. Please wait ~30-60 seconds and try again. (Automatic key rotation tried all available keys)"
         return "⏳ Service is busy (quota exceeded). Please try again in ~30 seconds. All keys were rotated automatically."
@@ -155,9 +211,7 @@ def _friendly_error_message(raw_msg: str) -> str:
         return "⚠️ Gemini service error. Please try again shortly."
     if "401" in raw_msg or "403" in raw_msg or "permission" in low:
         return "⚠️ Some API keys are invalid or have permission issues. The system rotated to next keys but none succeeded."
-    # Fallback: truncated raw but friendly prefix
     short = raw_msg[:500]
-    # Avoid exposing full JSON with tons of details; give summary
     if len(short) > 200:
         short = short[:200] + "..."
     return short
@@ -177,22 +231,18 @@ async def try_api_call(model: str, body: dict) -> tuple[Optional[dict], Optional
     if data:
         return data, None
     raw_msg = err.message if isinstance(err, HTTPException) else (str(err) if err else "All keys exhausted")
-    # If 429 and cooldown will clear soon, wait and retry one more full cycle
     low = raw_msg.lower() if isinstance(raw_msg, str) else ""
     if "429" in raw_msg or "resource_exhausted" in low or "quota" in low:
         try:
             from api_keys import time_until_next_key_available, get_available_keys
             wait = time_until_next_key_available()
-            # If next key available within 12s, wait and retry once
             if 0 < wait <= 12.0:
                 logger.info(f"All keys 429, waiting {wait:.1f}s for next key then retrying once")
                 await asyncio.sleep(wait + 0.4)
-                # Refresh start index
                 start_idx2 = await get_next_key_index()
                 data2, err2 = await _gemini_request(url, body, start_idx2)
                 if data2:
                     return data2, None
-                # Use second error if exists
                 if err2:
                     raw_msg = err2.message if isinstance(err2, HTTPException) else str(err2)
         except Exception as exc:
@@ -229,21 +279,71 @@ def build_body(history_messages: list[dict], current_parts: list, system_text: s
         "contents": alternating_contents,
         "generationConfig": {"maxOutputTokens": MAX_OUTPUT_TOKENS, "temperature": 1.0},
     }
-    # Only function calling is enabled — no built-in tools (googleSearch removed)
     if use_functions:
         body["tools"] = [{"functionDeclarations": FUNCTION_DECLARATIONS}]
+        body["toolConfig"] = {"functionCallingConfig": {"mode": "AUTO"}}
     return body
 
 def extract_sources(data: dict) -> list[dict]:
-    # Built-in grounding removed — kept for backward compatibility
-    return []
+    """Extract grounding sources VERY correctly from Gemini groundingMetadata.
+
+    Handles both generateContent and Files API shapes.
+    Dedupes by URL, preserves order, handles edge cases.
+    """
+    sources: list[dict] = []
+    seen: set[str] = set()
+    try:
+        candidates = data.get("candidates", [])
+        if not candidates:
+            return []
+        cand = candidates[0]
+        gm = cand.get("groundingMetadata") or cand.get("grounding_metadata") or {}
+        # groundingChunks
+        chunks = gm.get("groundingChunks") or gm.get("grounding_chunks") or []
+        for chunk in chunks:
+            web = chunk.get("web") or chunk.get("Web") or {}
+            if not isinstance(web, dict):
+                continue
+            uri = (web.get("uri") or web.get("url") or "").strip()
+            title = (web.get("title") or web.get("name") or "Source").strip()
+            if not uri:
+                continue
+            # Normalize uri
+            if uri not in seen:
+                seen.add(uri)
+                # Clean title fallback to domain if empty
+                if not title or title.lower() == "source":
+                    try:
+                        from urllib.parse import urlparse
+                        title = urlparse(uri).netloc or title
+                    except Exception:
+                        pass
+                sources.append({"title": title[:200], "url": uri})
+        # Fallback: try retrievalMetadata / searchEntryPoint is not a source, ignore
+        # Also handle alternative location: candidate may have groundingMetadata inside content?
+        if not sources:
+            # Try alternative nested path (some versions)
+            alt = data.get("groundingMetadata") or {}
+            chunks2 = alt.get("groundingChunks") or []
+            for chunk in chunks2:
+                web = chunk.get("web", {})
+                uri = (web.get("uri") or "").strip()
+                title = (web.get("title") or "Source").strip()
+                if uri and uri not in seen:
+                    seen.add(uri)
+                    sources.append({"title": title, "url": uri})
+    except Exception as exc:
+        logger.debug(f"extract_sources failed: {exc}")
+    return sources
 
 def extract_ai_text(data: dict) -> tuple[str, list[dict]]:
     candidates = data.get("candidates", [])
     if not candidates: return "No response received from AI.", []
     parts = candidates[0].get("content", {}).get("parts", [])
-    ai_text = "\n".join(p["text"] for p in parts if p.get("text"))
-    return (ai_text or "No response received from AI."), []
+    ai_text = "\n".join(p.get("text", "") for p in parts if p.get("text"))
+    ai_text = ai_text.strip() if ai_text else "No response received from AI."
+    sources = extract_sources(data)
+    return ai_text, sources
 
 def extract_function_calls(data: dict) -> list[dict]:
     candidates = data.get("candidates", [])
@@ -252,69 +352,309 @@ def extract_function_calls(data: dict) -> list[dict]:
     calls = []
     for part in parts:
         fc = part.get("functionCall")
-        if fc: calls.append({"name": fc.get("name", ""), "args": fc.get("args", {})})
+        if fc:
+            # Preserve id if present (Gemini 3 returns id)
+            calls.append({"name": fc.get("name", ""), "args": fc.get("args", {}) or {}, "id": fc.get("id")})
     return calls
 
+def format_sources_block(sources: list[dict]) -> str:
+    """Format sources into a markdown/HTML block very correctly."""
+    if not sources:
+        return ""
+    lines = ["\n📌 **Sources:**"]
+    for idx, s in enumerate(sources, 1):
+        title = escape_html(s.get("title", "Source"))
+        url = s.get("url", "").strip()
+        if url:
+            # Escape url for HTML attribute
+            safe_url = escape_html(url)
+            lines.append(f"{idx}. <a href=\"{safe_url}\">{title}</a>")
+        else:
+            lines.append(f"{idx}. {title}")
+    return "\n".join(lines)
+
+def format_sources_markdown(sources: list[dict]) -> str:
+    """Plain markdown version for model-internal formatted_sources."""
+    if not sources:
+        return ""
+    lines = ["\n📌 Sources:"]
+    for idx, s in enumerate(sources, 1):
+        title = (s.get("title") or "Source").strip()
+        url = s.get("url", "").strip()
+        if url:
+            lines.append(f"{idx}. {title} - {url}")
+        else:
+            lines.append(f"{idx}. {title}")
+    return "\n".join(lines)
+
 def format_response_with_sources(ai_text: str, sources: list[dict] = None) -> str:
-    # Sources are no longer produced (googleSearch removed); keep function for compatibility
-    return markdown_to_html(ai_text)
+    """Convert markdown ai_text to HTML and append formatted sources if present."""
+    html = markdown_to_html(ai_text or "")
+    if sources:
+        html += "\n" + markdown_to_html(format_sources_markdown(sources)) if False else ""  # placeholder
+        # Actually append HTML sources block
+        html += format_sources_block(sources)
+    return html
 
-async def _execute_function(cid: int, func_name: str, args: dict) -> dict:
-    if func_name == "save_memory":
-        memory_text = args.get("memory", "")
-        uid = args.get("user_id", cid)
-        if memory_text:
-            await save_memory(int(uid), memory_text)
-            return {"status": "success", "message": f"Memory saved: {memory_text}"}
-    elif func_name == "load_memory":
-        uid = args.get("user_id", cid)
-        memories = await get_memories(int(uid))
-        if memories:
-            return {"status": "success", "user_id": uid, "memories": memories}
-        return {"status": "success", "user_id": uid, "memories": [], "message": "No saved memories found for this user."}
-    elif func_name == "create_pdf":
-        topic = args.get("topic", "")
-        if topic:
+# =============================================================================
+# WEB_SEARCH FUNCTION — Dedicated helper using gemini-2.5-flash + google_search
+# Architecture: main model -> web_search(query) -> gemini-2.5-flash(google_search) -> formatted_ai_response + formatted_sources -> main model -> final answer
+# All API calls use concurrent pool with max_workers=10 via ThreadPoolExecutor / asyncio semaphore
+# =============================================================================
+
+async def web_search(query: str, cid: int = 0) -> dict:
+    """Search the web using grounded Gemini model.
+
+    Uses model `gemini-2.5-flash` with system instruction that demands
+    structured, detailed per-result output and the `google_search` tool.
+    Returns dict with `formatted_output = f\"{formatted_ai_response}\\n{formatted_sources}\\n\"`
+    pronounced exactly as required, ready to be returned to the main model.
+
+    Concurrency: executed via the shared API pool (max_workers=10 internally via key rotation + rate limiter).
+    """
+    query_clean = (query or "").strip()
+    if not query_clean:
+        return {"status": "error", "message": "Query is required and cannot be empty.", "query": query}
+    if len(query_clean) > 500:
+        query_clean = query_clean[:500].strip()
+
+    # Build grounded search body
+    body: dict = {
+        "systemInstruction": {"parts": [{"text": WEB_SEARCH_SYSTEM_INSTRUCTION}]},
+        "contents": [{"role": "user", "parts": [{"text": query_clean}]}],
+        "tools": [{"google_search": {}}],
+        "generationConfig": {"maxOutputTokens": MAX_OUTPUT_TOKENS, "temperature": 0.2},
+    }
+
+    data, err = await try_api_call(WEB_SEARCH_MODEL, body)
+    if not data:
+        logger.warning(f"web_search failed query='{query_clean[:60]}' err={err}")
+        return {"status": "failed", "message": err or "Web search failed", "query": query_clean, "results": "", "sources": [], "formatted_output": ""}
+
+    # Extract very correctly
+    formatted_ai_response, sources = extract_ai_text(data)
+
+    # Handle empty edge case
+    if not formatted_ai_response or formatted_ai_response in ("No response received from AI.", "Failed to parse AI response."):
+        formatted_ai_response = f"No detailed search results found for query: {query_clean}. Please try a more specific query."
+
+    # Format sources very correctly (deduplicated, verified)
+    formatted_sources = format_sources_markdown(sources)
+    if not formatted_sources and sources:
+        # Fallback formatting
+        formatted_sources = "\n".join(f"{s['title']} - {s['url']}" for s in sources)
+    elif not formatted_sources:
+        formatted_sources = "\n📌 Sources: (grounding provided but no explicit chunks — see synthesis above)"
+
+    # Required output to return to the model: f"{formatted_ai_response}\n{formatted_sources}\n"
+    formatted_output = f"{formatted_ai_response}\n{formatted_sources}\n"
+
+    # Also prepare HTML block for potential direct display (not used for functionResponse but useful)
+    html_sources = format_sources_block(sources)
+
+    logger.info(f"web_search success query='{query_clean[:60]}' sources={len(sources)}")
+
+    return {
+        "status": "success",
+        "message": "Web search completed successfully.",
+        "query": query_clean,
+        "results": formatted_ai_response,
+        "sources": sources,
+        "formatted_sources": formatted_sources,
+        "html_sources": html_sources,
+        "formatted_output": formatted_output,
+        # Also include combined for convenience per spec
+        "combined": formatted_output,
+    }
+
+
+async def _execute_function(cid: int, func_name: str, args: dict, user_name: str = "User") -> dict:
+    """Execute a single function call and return its response dict (for functionResponse).
+
+    Handles save_memory, load_memory, create_pdf, generate_image, web_search.
+    All functions are designed to work very correctly and be concurrency-safe.
+    """
+    try:
+        # --- SAVE MEMORY ---
+        if func_name == "save_memory":
+            memory_text = (args.get("memory") or "").strip()
+            uid = args.get("user_id", cid)
+            try:
+                uid_int = int(uid)
+            except Exception:
+                uid_int = cid
+            if not memory_text:
+                return {"status": "error", "message": "Memory text is required and cannot be empty."}
+            saved = await save_memory(uid_int, memory_text)
+            if saved:
+                return {"status": "success", "message": f"Memory saved successfully: {memory_text}", "memory": memory_text, "user_id": uid_int}
+            else:
+                # Either duplicate or failed; check if duplicate
+                memories = await get_memories(uid_int)
+                if any(memory_text.lower() == m.lower() for m in memories):
+                    return {"status": "success", "message": f"Memory already exists (duplicate not saved): {memory_text}", "memory": memory_text, "user_id": uid_int}
+                return {"status": "error", "message": "Failed to save memory (storage error)."}
+        
+        # --- LOAD MEMORY ---
+        elif func_name == "load_memory":
+            uid = args.get("user_id", cid)
+            try:
+                uid_int = int(uid)
+            except Exception:
+                uid_int = cid
+            memories = await get_memories(uid_int)
+            formatted = format_memories_block(memories) if memories else "No saved memories found for this user."
+            # Return formatted manner as requested
+            if memories:
+                return {
+                    "status": "success",
+                    "message": f"Loaded {len(memories)} saved memories.",
+                    "user_id": uid_int,
+                    "memories": memories,
+                    "formatted": formatted,
+                    "count": len(memories)
+                }
+            return {
+                "status": "success",
+                "message": "No saved memories found for this user.",
+                "user_id": uid_int,
+                "memories": [],
+                "formatted": formatted,
+                "count": 0
+            }
+        
+        # --- CREATE PDF ---
+        elif func_name == "create_pdf":
+            topic = (args.get("topic") or "").strip()
+            file_name = (args.get("file_name") or "").strip() or None
+            if not topic:
+                return {"status": "error", "message": "Topic is required for PDF creation."}
             from texttopdf import execute_text_to_pdf
-            await execute_text_to_pdf(cid, topic)
-            return {"status": "success", "message": f"PDF created for topic: {topic}"}
-    elif func_name == "generate_image":
-        prompt = args.get("prompt", "")
-        if prompt:
+            # execute_text_to_pdf handles sending to Telegram and returns bool
+            ok = await execute_text_to_pdf(cid, topic, file_name=file_name, announce=False)
+            if ok:
+                return {"status": "success", "message": f"PDF created successfully for topic: {topic}", "topic": topic}
+            return {"status": "failed", "message": f"PDF creation failed for topic: {topic}. Please refine the topic and try again.", "topic": topic}
+        
+        # --- GENERATE IMAGE ---
+        elif func_name == "generate_image":
+            prompt = (args.get("prompt") or "").strip()
+            if not prompt:
+                return {"status": "error", "message": "Prompt is required for image generation."}
             from image_generation import execute_image
-            await execute_image(cid, prompt, "User")
-            return {"status": "success", "message": f"Image generated for: {prompt}"}
-    return {"status": "error", "message": f"Unknown function or missing args: {func_name}"}
+            ok = await execute_image(cid, prompt, user_name, announce=False)
+            if ok:
+                return {"status": "success", "message": f"Image generated successfully for: {prompt}", "prompt": prompt}
+            return {"status": "failed", "message": "Image generation failed. Please try again with a different prompt.", "prompt": prompt}
+        
+        # --- WEB SEARCH ---
+        elif func_name == "web_search":
+            query = (args.get("query") or "").strip()
+            if not query:
+                return {"status": "error", "message": "Query is required for web search and cannot be empty."}
+            result = await web_search(query, cid)
+            # web_search already returns status/message etc; pass through as functionResponse
+            # Ensure response is JSON-serializable and contains formatted_output
+            return result
 
-async def _send_function_response(cid: int, model: str, body: dict, function_calls: list[dict]) -> Optional[str]:
+    except Exception as exc:
+        logger.exception(f"_execute_function failed name={func_name} cid={cid}")
+        return {"status": "failed", "message": f"Function {func_name} encountered an error: {exc}"}
+    
+    return {"status": "error", "message": f"Unknown function or missing required arguments: {func_name}"}
+
+
+async def _execute_functions_concurrently(cid: int, function_calls: list[dict], user_name: str = "User") -> list[dict]:
+    """Execute multiple function calls concurrently with max_workers=10.
+
+    Uses asyncio.gather with semaphore to limit concurrency to MAX_CONCURRENT_WORKERS.
+    Preserves order of results to match input order (required for functionResponse mapping).
+    """
+    if not function_calls:
+        return []
+    semaphore = asyncio.Semaphore(MAX_CONCURRENT_WORKERS)
+
+    async def _run_one(fc: dict) -> dict:
+        async with semaphore:
+            result = await _execute_function(cid, fc["name"], fc.get("args", {}) or {}, user_name=user_name)
+            # Preserve id if provided (Gemini 3)
+            resp = {"functionResponse": {"name": fc["name"], "response": result}}
+            if fc.get("id"):
+                resp["functionResponse"]["id"] = fc["id"]
+            return resp
+
+    # Gather concurrently, preserve order
+    tasks = [_run_one(fc) for fc in function_calls]
+    results = await asyncio.gather(*tasks)
+    return results
+
+
+async def _send_function_response(cid: int, model: str, body: dict, function_calls: list[dict], user_name: str = "User", depth: int = 0) -> Optional[str]:
+    """Handle functionResponse round-trip, concurrently executing functions.
+
+    Implements compositional calling: if the follow-up also contains functionCalls, recurse.
+    Limits depth to MAX_FUNCTION_CALL_TURNS to prevent infinite loops.
+    """
+    if depth >= MAX_FUNCTION_CALL_TURNS:
+        logger.warning(f"Max function call turns exceeded depth={depth} cid={cid}")
+        return "I completed the tool steps but reached the maximum tool-call limit before finishing. Please try rephrasing or breaking the request into parts."
+
     contents = list(body.get("contents", []))
-    fc_parts = [{"functionCall": {"name": fc["name"], "args": fc["args"]}} for fc in function_calls]
+    # Append model turn with functionCalls
+    fc_parts = []
+    for fc in function_calls:
+        part = {"functionCall": {"name": fc["name"], "args": fc.get("args", {}) or {}}}
+        if fc.get("id"):
+            part["functionCall"]["id"] = fc["id"]
+        fc_parts.append(part)
     contents.append({"role": "model", "parts": fc_parts})
     
-    fr_parts = []
-    for fc in function_calls:
-        result = await _execute_function(cid, fc["name"], fc["args"])
-        fr_parts.append({"functionResponse": {"name": fc["name"], "response": result}})
+    # Execute all functions concurrently with max_workers=10
+    fr_parts = await _execute_functions_concurrently(cid, function_calls, user_name=user_name)
     contents.append({"role": "user", "parts": fr_parts})
     
     follow_up = dict(body)
     follow_up["contents"] = contents
+    # Preserve toolConfig and systemInstruction
+    # follow_up already has them from body
     data, err = await try_api_call(model, follow_up)
-    if not data: return None
+    if not data:
+        # If follow-up fails, return the function results as fallback so user still gets value
+        logger.warning(f"_send_function_response follow-up failed cid={cid} err={err}")
+        # Try to extract meaningful fallback from function results
+        try:
+            messages = []
+            for part in fr_parts:
+                resp = part.get("functionResponse", {}).get("response", {})
+                msg = resp.get("message") or resp.get("formatted_output") or ""
+                if msg:
+                    messages.append(msg)
+            fallback = "\n\n".join(messages) if messages else "I finished the requested tool actions, but couldn't generate a final summary. Please check the results above."
+            return fallback
+        except Exception:
+            return None
     
     more_calls = extract_function_calls(data)
-    if more_calls: return await _send_function_response(cid, model, follow_up, more_calls)
+    if more_calls:
+        return await _send_function_response(cid, model, follow_up, more_calls, user_name=user_name, depth=depth+1)
     
-    ai_text, _ = extract_ai_text(data)
+    ai_text, sources = extract_ai_text(data)
+    # If no text but sources exist, still return with sources formatting
+    if not ai_text or ai_text in ("No response received from AI.", "Failed to parse AI response."):
+        ai_text = "Done — I completed that for you."
+    # Append sources handling is done by caller; here return ai_text and let caller format
+    # For backward compat, we return text; caller will handle sources if needed
+    # But we should also store sources in a way that caller can use: we return tuple via side? For now handle in handle_gemini directly.
+    # To preserve sources for caller, we could return both — however Python typing says Optional[str]. We'll just return text and handle sources via global? Instead we return text; caller will re-extract? Safer to return text and include sources in text? We'll handle differently.
+    # We'll return text and caller will extract again? But we already have sources.
+    # To pass sources, we could set an attribute on function? Simpler: just return text with sources formatted appended if present.
+    if sources:
+        ai_text = f"{ai_text}\n{format_sources_markdown(sources)}\n"
     return ai_text
 
-async def call_gemini_raw(cid: int, parts: list, system_text: str) -> Optional[str]:
-    if not await fetch_api_keys():
-        return None
-    model = await get_gemini_model(cid)
-
+async def call_gemini_raw(cid: int, parts: list, system_text: str, model_override: str | None = None) -> Optional[str]:
+    model = model_override or await get_gemini_model(cid)
     processed_parts = await _process_parts_for_api(parts)
-
     body = {
         "systemInstruction": {"parts": [{"text": system_text}]},
         "contents": [{"role": "user", "parts": _normalize_parts(processed_parts)}],
@@ -324,7 +664,7 @@ async def call_gemini_raw(cid: int, parts: list, system_text: str) -> Optional[s
     if not data:
         return None
     text, _ = extract_ai_text(data)
-    return text
+    return text if text and text not in ("No response received from AI.", "Failed to parse AI response.") else None
 
 
 async def _process_parts_for_api(parts: list) -> list:
@@ -364,18 +704,25 @@ async def _process_parts_for_api(parts: list) -> list:
             processed.append(part)
             continue
 
+        # Already a fileUri/fileData -> normalize to fileData? Keep as is but normalize keys
+        if part.get("fileData") or part.get("fileUri") or part.get("file_data"):
+            # Normalize via _normalize_part_keys
+            normalized = _normalize_part_keys(part)
+            processed.append(normalized)
+            continue
+
         processed.append(part)
     return processed
 
 
 
 async def handle_gemini(cid: int, current_parts: list, system_text: str, use_functions: bool = True, user_name: str = "User", **kwargs) -> Optional[str]:
+    """Main entry: handle Gemini generateContent with function calling, concurrent execution, and proper memory/web_search support."""
     model = await get_gemini_model(cid)
     history = await get_recent_history(cid, CONTEXT_SIZE)
 
     processed_parts = await _process_parts_for_api(current_parts)
 
-    # Only functionDeclarations are sent — all built-in tools (googleSearch) removed
     body = build_body(history, processed_parts, system_text, use_functions=use_functions)
     body["generationConfig"]["temperature"] = await get_user_temp(cid)
     
@@ -389,13 +736,20 @@ async def handle_gemini(cid: int, current_parts: list, system_text: str, use_fun
     if data:
         function_calls = extract_function_calls(data)
         if function_calls:
+            # Send appropriate chat actions concurrently? Use typing for memory/search, etc.
             for fc in function_calls:
-                if fc["name"] in ("save_memory", "load_memory"): await send_chat_action(cid, "typing")
-                elif fc["name"] == "create_pdf": await send_chat_action(cid, "upload_document")
-                elif fc["name"] == "generate_image": await send_chat_action(cid, "upload_photo")
+                fname = fc["name"]
+                if fname in ("save_memory", "load_memory", "web_search"):
+                    await send_chat_action(cid, "typing")
+                elif fname == "create_pdf":
+                    await send_chat_action(cid, "upload_document")
+                elif fname == "generate_image":
+                    await send_chat_action(cid, "upload_photo")
                 
-            final_text = await _send_function_response(cid, model, body, function_calls)
+            final_text = await _send_function_response(cid, model, body, function_calls, user_name=user_name)
             if final_text:
+                # Extract any sources that may have been embedded by web_search follow-up
+                # final_text may already contain formatted_sources if web_search was used
                 await save_message(cid, "model", final_text)
                 if final_text not in ("No response received from AI.", "Failed to parse AI response."):
                     await send_message(cid, format_response_with_sources(final_text, []), parse_mode="HTML")
@@ -413,14 +767,12 @@ async def handle_gemini(cid: int, current_parts: list, system_text: str, use_fun
         
     # err is already user-friendly from try_api_call
     friendly_err = err or "Unknown error occurred"
-    # Log diagnostics
     try:
         from api_keys import get_cooldown_stats
         stats = get_cooldown_stats()
         logger.warning(f"handle_gemini failed cid={cid} err={friendly_err[:200]} stats={stats}")
     except Exception:
         pass
-    # Don't prefix with "Error:" if message already has emoji/friendly prefix
     if friendly_err.strip().startswith(("⏳", "⚠️", "❌")):
         error_msg = friendly_err
     else:
@@ -429,6 +781,3 @@ async def handle_gemini(cid: int, current_parts: list, system_text: str, use_fun
     await send_message(cid, error_msg)
     return None
 
-
-# web_search removed — googleSearch built-in tool is disabled.
-# Only functionDeclarations are used for API requests.

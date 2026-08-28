@@ -10,6 +10,9 @@ MODEL_SAHANA_2 = "gemini-3.5-flash"
 MODEL_SAHANA_3 = "gemini-3.6-flash"
 DEFAULT_MODEL = "sahana-1"
 
+# Dedicated model for web_search function (strict grounding with google search)
+WEB_SEARCH_MODEL = "gemini-2.5-flash"
+
 ADMINS = [7026190306, 6280547580]
 DEFAULT_TTS_VOICE = "en-US-AriaNeural"
 REDIS_URL = os.environ.get("REDIS_URL")

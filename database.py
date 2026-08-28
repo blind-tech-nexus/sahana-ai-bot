@@ -76,15 +76,57 @@ async def get_file_data(cid: int) -> Optional[dict]:
     val = await r.get(fk(cid))
     return json.loads(val) if val else None
 async def clear_file_data(cid: int) -> None: await r.delete(fk(cid))
-async def get_memories(cid: int) -> list[str]: return [m for m in await r.lrange(mk(cid), 0, -1) if m]
+async def get_memories(cid: int) -> list[str]:
+    try:
+        raw = await r.lrange(mk(cid), 0, -1)
+        return [str(m).strip() for m in raw if m and str(m).strip()]
+    except Exception:
+        return []
 
-async def save_memory(cid: int, memory: str) -> None:
-    cleaned = (memory or "").strip()
-    if not cleaned: return
+
+def format_memories_block(memories: list[str]) -> str:
+    """Return memories in a clean formatted numbered list for model/user display."""
+    if not memories:
+        return "No saved memories found."
+    lines = []
+    for idx, mem in enumerate(memories, 1):
+        cleaned = str(mem).strip()
+        if cleaned:
+            lines.append(f"{idx}. {cleaned}")
+    return "\n".join(lines) if lines else "No saved memories found."
+
+
+async def get_formatted_memories(cid: int) -> str:
+    """Load memories and return a formatted string (numbered list) for display or model context."""
     memories = await get_memories(cid)
-    if cleaned in memories: return
-    await r.rpush(mk(cid), cleaned)
-    if await r.llen(mk(cid)) > 50: await r.ltrim(mk(cid), 1, -1)
+    if not memories:
+        return "No saved memories found for this user."
+    header = f"🧠 Saved Memories ({len(memories)}):\n"
+    return header + format_memories_block(memories)
+
+
+async def save_memory(cid: int, memory: str) -> bool:
+    """Save a memory string for cid. Returns True if saved, False if duplicate/empty/failed."""
+    cleaned = (memory or "").strip()
+    if not cleaned:
+        return False
+    # Enforce length limit to avoid abuse (max 1000 chars)
+    if len(cleaned) > 1000:
+        cleaned = cleaned[:1000].strip()
+    try:
+        memories = await get_memories(cid)
+        # Case-insensitive duplicate check
+        lowered = cleaned.lower()
+        if any(m.lower() == lowered for m in memories):
+            return False
+        await r.rpush(mk(cid), cleaned)
+        current_len = await r.llen(mk(cid))
+        if current_len > 50:
+            await r.ltrim(mk(cid), current_len - 50, -1)
+        return True
+    except Exception:
+        return False
+
 
 async def clear_memories(cid: int) -> None: await r.delete(mk(cid))
 async def get_user_voice(cid: int) -> str:

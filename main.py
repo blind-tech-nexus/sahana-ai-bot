@@ -191,7 +191,7 @@ def _copy_broadcast_message_sync(target: int, source_chat_id: int, source_messag
 def _run_parallel_broadcast(users: list[int], sender) -> tuple[int, int, list[int]]:
     success, fail = 0, 0
     failed_ids: list[int] = []
-    with ThreadPoolExecutor(max_workers=50) as executor:
+    with ThreadPoolExecutor(max_workers=10) as executor:
         futures = {executor.submit(sender, target): target for target in users}
         for future in as_completed(futures):
             target = futures[future]
