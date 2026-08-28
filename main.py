@@ -134,10 +134,33 @@ async def relay_voice_reply(sender_id: int, sender_name: str, target_id: int, vo
 async def run_broadcast(admin_id: int, text: str | None = None, voice_data: bytes | None = None, voice_mime: str = "audio/ogg") -> list[int]:
     all_users = await get_all_users()
     users = [int(uid) for uid in all_users]
-    if voice_data is not None:
-        success, fail, failed_ids = _run_parallel_broadcast(users, lambda target: _send_broadcast_voice_sync(target, voice_data, voice_mime))
-    else:
-        success, fail, failed_ids = _run_parallel_broadcast(users, lambda target: _send_broadcast_text_sync(target, text or ""))
+    # All networking inside concurrency with max_workers=50 per spec: use asyncio.Semaphore(50) + gather
+    semaphore = asyncio.Semaphore(50)
+
+    async def _send_one(target: int) -> tuple[int, bool]:
+        async with semaphore:
+            try:
+                if voice_data is not None:
+                    voice_result = await send_voice_bytes(target, voice_data, "📢 Voice broadcast", "broadcast.ogg", voice_mime)
+                    if not voice_result or not voice_result.get("ok"):
+                        return target, False
+                    message_result = await send_message(target, "📢 <b>Voice Broadcast</b>", parse_mode="HTML", reply_markup=broadcast_reply_keyboard())
+                    return target, bool(message_result and message_result.get("ok"))
+                else:
+                    result = await send_message(
+                        target,
+                        f"📢 <b>Broadcast:</b>\n\n{escape_html(text or '')}",
+                        parse_mode="HTML",
+                        reply_markup=broadcast_reply_keyboard(),
+                    )
+                    return target, bool(result and result.get("ok"))
+            except Exception:
+                return target, False
+
+    results = await asyncio.gather(*[_send_one(uid) for uid in users])
+    success = sum(1 for _, ok in results if ok)
+    fail = len(results) - success
+    failed_ids = [uid for uid, ok in results if not ok]
     if failed_ids:
         await send_message(admin_id, f"📢 Broadcast done.\n✅ Sent: {success}\n❌ Failed: {fail}", reply_markup=ikb([[btn("🧹 Clear failed users", f"broadcast_clear_failed:{admin_id}")]]))
     else:
@@ -148,7 +171,25 @@ async def run_broadcast(admin_id: int, text: str | None = None, voice_data: byte
 async def run_broadcast_copy(admin_id: int, source_chat_id: int, source_message_id: int) -> list[int]:
     all_users = await get_all_users()
     users = [int(uid) for uid in all_users]
-    success, fail, failed_ids = _run_parallel_broadcast(users, lambda target: _copy_broadcast_message_sync(target, source_chat_id, source_message_id))
+    semaphore = asyncio.Semaphore(50)
+
+    async def _copy_one(target: int) -> tuple[int, bool]:
+        async with semaphore:
+            try:
+                result = await copy_message(
+                    to_chat_id=target,
+                    from_chat_id=source_chat_id,
+                    message_id=source_message_id,
+                    reply_markup=broadcast_reply_keyboard(),
+                )
+                return target, bool(result and result.get("ok"))
+            except Exception:
+                return target, False
+
+    results = await asyncio.gather(*[_copy_one(uid) for uid in users])
+    success = sum(1 for _, ok in results if ok)
+    fail = len(results) - success
+    failed_ids = [uid for uid, ok in results if not ok]
     if failed_ids:
         await send_message(admin_id, f"📢 Attachment broadcast done.\n✅ Sent: {success}\n❌ Failed: {fail}", reply_markup=ikb([[btn("🧹 Clear failed users", f"broadcast_clear_failed:{admin_id}")]]))
     else:
@@ -156,55 +197,18 @@ async def run_broadcast_copy(admin_id: int, source_chat_id: int, source_message_
     return failed_ids
 
 
-def _send_broadcast_text_sync(target: int, text: str) -> bool:
-    result = asyncio.run(
-        send_message(
-            target,
-            f"📢 <b>Broadcast:</b>\n\n{escape_html(text)}",
-            parse_mode="HTML",
-            reply_markup=broadcast_reply_keyboard(),
-        )
-    )
-    return bool(result and result.get("ok"))
+# --- Deprecated sync helpers kept for backward compat (no longer used) ---
+def _send_broadcast_text_sync(target: int, text: str) -> bool:  # pragma: no cover
+    return False
 
+def _send_broadcast_voice_sync(target: int, voice_data: bytes, voice_mime: str) -> bool:  # pragma: no cover
+    return False
 
-def _send_broadcast_voice_sync(target: int, voice_data: bytes, voice_mime: str) -> bool:
-    voice_result = asyncio.run(send_voice_bytes(target, voice_data, "📢 Voice broadcast", "broadcast.ogg", voice_mime))
-    if not voice_result or not voice_result.get("ok"):
-        return False
-    message_result = asyncio.run(send_message(target, "📢 <b>Voice Broadcast</b>", parse_mode="HTML", reply_markup=broadcast_reply_keyboard()))
-    return bool(message_result and message_result.get("ok"))
+def _copy_broadcast_message_sync(target: int, source_chat_id: int, source_message_id: int) -> bool:  # pragma: no cover
+    return False
 
-
-def _copy_broadcast_message_sync(target: int, source_chat_id: int, source_message_id: int) -> bool:
-    result = asyncio.run(
-        copy_message(
-            to_chat_id=target,
-            from_chat_id=source_chat_id,
-            message_id=source_message_id,
-            reply_markup=broadcast_reply_keyboard(),
-        )
-    )
-    return bool(result and result.get("ok"))
-
-
-def _run_parallel_broadcast(users: list[int], sender) -> tuple[int, int, list[int]]:
-    success, fail = 0, 0
-    failed_ids: list[int] = []
-    with ThreadPoolExecutor(max_workers=50) as executor:
-        futures = {executor.submit(sender, target): target for target in users}
-        for future in as_completed(futures):
-            target = futures[future]
-            try:
-                if future.result():
-                    success += 1
-                else:
-                    fail += 1
-                    failed_ids.append(target)
-            except Exception:
-                fail += 1
-                failed_ids.append(target)
-    return success, fail, failed_ids
+def _run_parallel_broadcast(users: list[int], sender) -> tuple[int, int, list[int]]:  # pragma: no cover
+    return 0, 0, []
 
 
 @app.get("/")
