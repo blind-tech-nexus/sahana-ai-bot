@@ -803,10 +803,13 @@ async def webhook(request: Request):
         name = get_user_name(message)
 
         group_prompt = None
-        if is_group_chat(message):
+        group_reply_id = None
+        is_group = is_group_chat(message)
+        if is_group:
             group_prompt = extract_group_prompt(message)
             if group_prompt is None:
                 return JSONResponse({"ok": True})
+            group_reply_id = message.get("message_id")
             if "text" in message:
                 message["text"] = group_prompt
             elif "caption" in message:
@@ -1071,7 +1074,32 @@ async def webhook(request: Request):
             return JSONResponse({"ok": True})
 
         if message.get("photo"):
-            await handle_photo(cid, message, name)
+            if is_group and group_prompt is not None:
+                # Group photo with @sahana mention: handle directly with reply
+                await ensure_user(cid, name)
+                await send_chat_action(cid, "typing")
+                # Download and handle via handle_gemini with reply
+                from message import download_telegram_file, get_telegram_file_info
+                import base64
+                best_photo = message["photo"][-1]
+                file_info = await get_telegram_file_info(best_photo["file_id"])
+                file_bytes = await download_telegram_file(best_photo["file_id"])
+                if file_bytes and file_info:
+                    from upload import get_display_name, detect_mime_type
+                    file_path = file_info.get("file_path", "photo.jpg")
+                    display = get_display_name(file_path, "photo.jpg")
+                    mime = detect_mime_type(file_path, "image/jpeg")
+                    encoded = base64.b64encode(file_bytes).decode("utf-8")
+                    from database import save_file_data, save_message
+                    await save_file_data(cid, {"mime_type": mime, "display_name": display, "base64": encoded})
+                    caption = (message.get("caption") or group_prompt or "Describe this image").strip()
+                    await save_message(cid, "user", f"[Image: {display}] {caption}")
+                    parts = [{"text": caption}, {"inlineData": {"mimeType": mime, "data": encoded}}]
+                    await handle_gemini(cid, parts, await get_system_text(name, cid), user_name=name, reply_to_message_id=group_reply_id)
+                else:
+                    await handle_photo(cid, message, name)
+            else:
+                await handle_photo(cid, message, name)
             return JSONResponse({"ok": True})
 
         if message.get("voice"):
@@ -1086,7 +1114,55 @@ async def webhook(request: Request):
             if st == "tool:audio_transcriber":
                 await transcribe_from_telegram_message(cid, message)
                 return JSONResponse({"ok": True})
-            await handle_document(cid, message, name)
+            if is_group and group_prompt is not None:
+                await ensure_user(cid, name)
+                await send_chat_action(cid, "typing")
+                prompt_text = (message.get("caption") or group_prompt or "Describe this document").strip()
+                # For group, handle document inline with reply to keep context
+                import base64
+                from message import download_telegram_file
+                from upload import detect_mime_type, get_display_name, is_gemini_supported_mime
+                from database import save_message, save_file_data
+                doc = message["document"]
+                file_name = doc.get("file_name", "document")
+                provided_mime = doc.get("mime_type", "")
+                file_bytes = await download_telegram_file(doc["file_id"])
+                if file_bytes:
+                    mime = detect_mime_type(file_name, provided_mime)
+                    if not is_gemini_supported_mime(mime):
+                        from config import CODE_EXTENSIONS
+                        ext = file_name.rsplit(".", 1)[-1].lower() if "." in file_name else ""
+                        if ext in CODE_EXTENSIONS:
+                            mime = "text/plain"
+                    # Check caption or group prompt handling
+                    if (message.get("caption") or "").strip():
+                        await save_message(cid, "user", f"[File: {file_name}] {prompt_text}")
+                        parts = [{"text": prompt_text}, {"inlineData": {"mimeType": mime, "data": base64.b64encode(file_bytes).decode("utf-8")}}]
+                        await handle_gemini(cid, parts, await get_system_text(name, cid), user_name=name, reply_to_message_id=group_reply_id)
+                    else:
+                        # Store and prompt but with reply context
+                        from api import MAX_INLINE_FILE_BYTES
+                        from api_keys import upload_file_with_retry
+                        if len(file_bytes) <= MAX_INLINE_FILE_BYTES:
+                            encoded = base64.b64encode(file_bytes).decode("utf-8")
+                            await save_file_data(cid, {"mime_type": mime, "display_name": file_name, "base64": encoded})
+                        else:
+                            file_uri = await upload_file_with_retry(file_bytes, mime, file_name)
+                            if file_uri:
+                                await save_file_data(cid, {"file_uri": file_uri, "mime_type": mime, "display_name": file_name, "from_files_api": True})
+                            else:
+                                encoded = base64.b64encode(file_bytes).decode("utf-8")
+                                await save_file_data(cid, {"mime_type": mime, "display_name": file_name, "base64": encoded})
+                        await save_message(cid, "user", f"[File: {file_name}] {prompt_text}")
+                        parts = [{"text": prompt_text}]
+                        # Attach file if available
+                        if len(file_bytes) <= MAX_INLINE_FILE_BYTES:
+                            parts.append({"inlineData": {"mimeType": mime, "data": base64.b64encode(file_bytes).decode("utf-8")}})
+                        await handle_gemini(cid, parts, await get_system_text(name, cid), user_name=name, reply_to_message_id=group_reply_id)
+                else:
+                    await handle_document(cid, message, name)
+            else:
+                await handle_document(cid, message, name)
             return JSONResponse({"ok": True})
 
         if message.get("audio"):
@@ -1374,6 +1450,7 @@ async def webhook(request: Request):
             current_parts,
             await get_system_text(name, cid),
             user_name=name,
+            reply_to_message_id=group_reply_id if is_group else None,
         )
         return JSONResponse({"ok": True})
 

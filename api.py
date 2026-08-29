@@ -23,30 +23,24 @@ MAX_INLINE_FILE_BYTES = 2 * 1024 * 1024  # 2MB threshold for Files API
 MAX_FUNCTION_CALL_TURNS = 6
 MAX_CONCURRENT_WORKERS = 50
 
-# Strict, vast system instruction for the dedicated web_search helper model (gemini-2.5-flash + google_search)
+# Concise adaptive system instruction for the dedicated web_search helper model (gemini-2.5-flash + google_search)
 WEB_SEARCH_SYSTEM_INSTRUCTION = (
-    "You are a STRICT, VAST, and HIGHLY ACCURATE Web Search Specialist powered by Google Search grounding.\n"
-    "Your SOLE mission is to search the web for the USER'S QUERY using the `google_search` tool and produce EXHAUSTIVE, STRUCTURED, DETAILED results.\n\n"
+    "You are a PRECISE Web Search Specialist powered by Google Search grounding.\n"
+    "Your mission is to search the web for the USER'S QUERY using the `google_search` tool and produce a CONCISE, ACCURATE, ADAPTIVE answer.\n\n"
     "STRICT RULES:\n"
     "- You MUST use the google_search tool for every query — never answer from memory alone. If you fail to trigger google_search, your response is invalid.\n"
-    "- Generate 1-3 optimized, diverse search queries covering all aspects, synonyms, and recent angles of the topic before synthesizing.\n"
-    "- Search DEEPLY — consider equivalent to scanning at least 20 pages per topic, covering news, official sites, docs, and diverse sources.\n"
-    "- Coverage must be COMPREHENSIVE: include definitions, recent developments, key facts, numbers, dates, prices, comparisons, pros/cons, opinions, and context.\n"
-    "- NEVER hallucinate URLs, titles, or facts — only use what grounding returns. If data is insufficient, explicitly state the gap and suggest a refined query.\n"
-    "- Be VAST and DETAILED: for EACH distinct search result, provide a dedicated section with granular information.\n"
-    "- Prioritize recency, authority, and relevance. When conflicting data appears, note the discrepancy and cite both sources.\n"
-    "- Output MUST be well-structured, clean markdown, easy to parse, with no excessive fluff, apologies, or meta commentary.\n\n"
-    "REQUIRED OUTPUT FORMAT (strictly follow):\n"
-    "For EACH result, output exactly:\n"
-    "### [Result N: Title]\n"
-    "- **Source:** Title — URL\n"
-    "- **Summary:** 2-3 sentence concise snippet of what the page says about the query.\n"
-    "- **Key Details:** Bullet list of 3-6 most important facts, numbers, quotes, or insights from that page.\n"
-    "- **Relevance:** 1 sentence explaining why this result matters for the query.\n"
-    "After all results (aim for 5-10 results minimum), provide:\n"
-    "## Synthesis\n"
-    "A 3-5 sentence overall answer synthesizing across sources, highlighting consensus, key numbers, and final takeaway.\n"
-    "Use markdown only. Keep each result detailed but scannable."
+    "- Generate 1-2 focused, optimized search queries covering the core intent and recent angles before synthesizing.\n"
+    "- Search deeply but SYNTHESIZE concisely — do NOT dump per-result verbose sections.\n"
+    "- NEVER hallucinate URLs, titles, or facts — only use what grounding returns. If data is insufficient, state the gap briefly and suggest a refined query.\n"
+    "- Be CONCISE and ADAPTIVE: simple queries (weather, definition, price, score) → 2-5 sentences or 3-5 bullets max. Complex/research queries → up to 8-12 bullets with headings, but still scannable. Adapt length to query complexity and result richness — never produce unnecessary long paragraphs.\n"
+    "- PRIORITIZE recency, authority, and relevance. Note conflicts in one sentence if needed.\n"
+    "- FORMATTING: Use clean markdown only (headings, bullets, bold). Do NOT include a Sources section, do NOT write 'Source: Title — URL' lines, do NOT embed raw URLs in the answer body. The system will append a verified markdown Sources block automatically — keep your body free of inline source URLs.\n"
+    "- No apologies, no meta commentary, no excessive fluff.\n\n"
+    "REQUIRED OUTPUT FORMAT (strict, adaptive):\n"
+    "1. Start with a 1-2 sentence direct answer.\n"
+    "2. If helpful, add 3-5 concise bullet points with key numbers, dates, facts, or distinctions (max 8 for complex topics).\n"
+    "3. End with a 1-2 sentence takeaway/synthesis only if it adds value.\n"
+    "Keep total length short for simple queries, moderately longer only when the query demands depth. Always concise.\n"
 )
 
 FUNCTION_DECLARATIONS = [
@@ -581,15 +575,15 @@ async def _execute_function(cid: int, func_name: str, args: dict, user_name: str
                     seen.add(low)
                     deduped_batch.append(m)
             if len(deduped_batch) == 1:
-                # Single-memory path — keep simple response for backward compat
+                # Single-memory path — confirmation will be sent as separate Telegram message by caller
                 single = deduped_batch[0]
                 saved = await save_memory(uid_int, single)
                 if saved:
-                    return {"status": "success", "message": f"Memory saved successfully: {single}", "memory": single, "memories": [single], "user_id": uid_int, "saved_count": 1}
+                    return {"status": "success", "message": f"Memory saved: {single} — System will send confirmation as a separate message; you must NOT repeat it, directly answer the user's original request.", "memory": single, "memories": [single], "user_id": uid_int, "saved_count": 1}
                 else:
                     memories = await get_memories(uid_int)
                     if any(single.lower() == mm.lower() for mm in memories):
-                        return {"status": "success", "message": f"Memory already exists (duplicate not saved): {single}", "memory": single, "memories": [single], "user_id": uid_int, "saved_count": 0, "duplicate": True}
+                        return {"status": "success", "message": f"Memory already exists (duplicate not saved): {single} — System will send confirmation separately; you must NOT repeat it, directly answer the user's original request.", "memory": single, "memories": [single], "user_id": uid_int, "saved_count": 0, "duplicate": True}
                     return {"status": "error", "message": "Failed to save memory (storage error).", "memory": single}
             # Bulk path: save N memories concurrently via batch helper
             result = await save_memories_batch(uid_int, deduped_batch)
@@ -599,13 +593,13 @@ async def _execute_function(cid: int, func_name: str, args: dict, user_name: str
             saved_cnt = result.get("saved", 0)
             dup_cnt = result.get("duplicates", 0)
             if saved_cnt > 0:
-                # Build concise but informative message that does NOT mislead main model to stop
+                # Build concise message — confirmation will be sent separately, instruct model not to duplicate
                 msg = f"Memories updated: {saved_cnt}/{total} new saved"
                 if dup_cnt:
                     msg += f", {dup_cnt} duplicates skipped"
                 msg += f". Saved: {', '.join(saved_items[:5])}{'...' if len(saved_items) > 5 else ''}"
-                # CRITICAL: instruct main model to continue original task
-                msg += " — Now continue and fully answer the user's original request using these saved facts where relevant."
+                # CRITICAL: save confirmation will be sent as separate Telegram message; model should not repeat it
+                msg += " — System will send memory confirmation as a separate message; you must NOT repeat it, directly answer the user's original request using these saved facts where relevant."
                 return {
                     "status": "success",
                     "message": msg,
@@ -622,7 +616,7 @@ async def _execute_function(cid: int, func_name: str, args: dict, user_name: str
                 if dup_cnt > 0 and result.get("failed", 0) == 0:
                     return {
                         "status": "success",
-                        "message": f"All {dup_cnt} memories already existed (duplicates not saved). Continue answering the user's original request.",
+                        "message": f"All {dup_cnt} memories already existed (duplicates not saved). System will send confirmation separately; you must NOT repeat it, directly answer the user's original request.",
                         "memories": deduped_batch,
                         "duplicate_items": dup_items,
                         "user_id": uid_int,
@@ -725,7 +719,7 @@ async def _execute_functions_concurrently(cid: int, function_calls: list[dict], 
     return results
 
 
-async def _send_function_response(cid: int, model: str, body: dict, function_calls: list[dict], user_name: str = "User", depth: int = 0) -> Optional[str]:
+async def _send_function_response(cid: int, model: str, body: dict, function_calls: list[dict], user_name: str = "User", depth: int = 0, reply_to_message_id: Optional[int] = None) -> Optional[str]:
     """Handle functionResponse round-trip, concurrently executing functions with robust retries.
 
     - Executes all functions concurrently with max_workers=50, iterating keys for every request.
@@ -752,6 +746,47 @@ async def _send_function_response(cid: int, model: str, body: dict, function_cal
     
     # Execute all functions concurrently with max_workers=50 (iterates keys per function internally)
     fr_parts = await _execute_functions_concurrently(cid, function_calls, user_name=user_name)
+
+    # --- SEPARATE MESSAGE HANDLING FOR SAVE_MEMORY ---
+    # Requirement: saved memory confirmation must be a separate Telegram message from the AI response.
+    # Send confirmation immediately so that final_text can be AI-only and avoid single combined message.
+    try:
+        for part in fr_parts:
+            fr = part.get("functionResponse", {}) or {}
+            fname = fr.get("name", "")
+            resp = fr.get("response", {}) or {}
+            if fname == "save_memory" and resp.get("status") == "success":
+                saved_items = resp.get("saved_items") or resp.get("memories") or []
+                saved_cnt = resp.get("saved_count", len(saved_items))
+                duplicate = resp.get("duplicate", False)
+                duplicate_cnt = resp.get("duplicate_count", 0)
+                # Build confirmation markdown (will be converted to HTML)
+                if saved_cnt and saved_cnt > 0 and saved_items:
+                    items_md = "\n".join(f"- {str(s).strip()}" for s in saved_items[:10])
+                    conf_md = f"✅ **Memory saved ({saved_cnt})**\n{items_md}"
+                    if duplicate_cnt:
+                        conf_md += f"\n\n*({duplicate_cnt} duplicate(s) skipped)*"
+                elif duplicate or (resp.get("duplicate_items")):
+                    dup_items = resp.get("duplicate_items") or saved_items
+                    if dup_items:
+                        items_md = "\n".join(f"- {str(s).strip()}" for s in dup_items[:5])
+                        conf_md = f"ℹ️ **Memory already exists**\n{items_md}"
+                    else:
+                        conf_md = "ℹ️ Memory already exists (duplicate not saved)."
+                else:
+                    # Fallback generic
+                    msg = resp.get("message", "Memory saved.")
+                    # Convert plain message to markdown
+                    conf_md = f"✅ {msg}"
+                # Convert to HTML and send as separate message
+                html = markdown_to_html(conf_md)
+                await save_message(cid, "model", conf_md)
+                await send_message(cid, html, parse_mode="HTML", reply_to_message_id=reply_to_message_id)
+                # Brief pause to ensure ordering
+                await asyncio.sleep(0.15)
+    except Exception as exc:
+        logger.debug(f"save_memory separate confirmation send failed: {exc}")
+
     contents.append({"role": "user", "parts": fr_parts})
     
     follow_up = dict(body)
@@ -842,8 +877,9 @@ async def _send_function_response(cid: int, model: str, body: dict, function_cal
                 pass
 
             # If save_memory succeeded, attempt direct synthesis that still answers original request
+            # NOTE: Confirmation already sent as separate message above, so fallback should return ONLY the AI answer part
             if save_memory_results:
-                # Build confirmation header
+                # Build header for logging only, but NOT included in return (already sent separately)
                 saved_summaries = []
                 for r in save_memory_results:
                     if r.get("status") == "success":
@@ -853,7 +889,7 @@ async def _send_function_response(cid: int, model: str, body: dict, function_cal
                             saved_summaries.append(f"Saved {cnt} memory(ies): " + ", ".join(str(x) for x in items[:5]))
                         elif r.get("message"):
                             saved_summaries.append(r.get("message"))
-                header = "\n".join(saved_summaries) if saved_summaries else "Memories updated."
+                # header kept for debugging but not returned
                 # Try to generate the actual answer the user requested (e.g., python code) via direct LLM call
                 if original_prompt:
                     # Include saved memories context in the retry prompt
@@ -864,11 +900,12 @@ async def _send_function_response(cid: int, model: str, body: dict, function_cal
                             if items:
                                 memories_block += "\n".join(f"- {m}" for m in items) + "\n"
                         retry_system = system_text or "You are Sahana, a helpful AI assistant."
+                        # Confirmation already sent, so instruct model to NOT repeat it
                         retry_prompt = (
                             f"User's original request was: \"{original_prompt}\"\n\n"
                             f"You have just saved these memories for user {user_name} (ID {cid}):\n{memories_block}\n\n"
-                            f"Now fulfill the user's original request COMPLETELY and directly. "
-                            f"Briefly acknowledge the saved memories at the start (1 sentence), then provide the full answer "
+                            f"Confirmation has already been sent separately, so do NOT mention saving again. "
+                            f"Directly and COMPLETELY fulfill the user's original request "
                             f"(e.g., if user asked for python code, provide the code; if they asked for a paragraph, write it using their bio). "
                             f"Do not say 'please retry' — deliver the answer now."
                         )
@@ -883,18 +920,14 @@ async def _send_function_response(cid: int, model: str, body: dict, function_cal
                         if retry_data:
                             retry_text, retry_sources = extract_ai_text(retry_data)
                             if retry_text and retry_text not in ("No response received from AI.", "Failed to parse AI response."):
-                                # Combine header with retry answer; ensure sources if any
                                 if retry_sources:
                                     retry_text = f"{retry_text}\n{format_sources_markdown(retry_sources)}\n"
-                                return f"{header}\n\n{retry_text}"
+                                return retry_text
                     except Exception as e:
                         logger.debug(f"save_memory fallback retry failed: {e}")
-                # If retry not possible or failed, provide header plus a helpful continuation that still fulfills the original request
-                # Per spec: NEVER stop at "Memories updated" — must provide the requested python code / answer
-                # Provide a generic template if the original request was code-related, otherwise a helpful prompt
+                # If retry not possible or failed, provide helpful continuation WITHOUT duplicating header (header already sent)
                 lower_prompt = (original_prompt or "").lower()
                 if "python" in lower_prompt or "code" in lower_prompt or "implement" in lower_prompt or "script" in lower_prompt:
-                    # Provide a starter Python template that can be customized — ensures user gets code even if synthesis failed
                     template_code = (
                         "```python\n"
                         "# Starter Python template (customize as needed)\n"
@@ -907,28 +940,33 @@ async def _send_function_response(cid: int, model: str, body: dict, function_cal
                         "    main()\n"
                         "```\n"
                     )
-                    return f"{header}\n\n✅ I've saved your details. Here's a Python starter for your request: \"{original_prompt[:300]}\"\n\n{template_code}\nTell me your specific logic (e.g., what the code should do) and I'll generate the full implementation immediately. (Temporary API limit prevented full synthesis — all keys are iterated with max_workers=50, retry will succeed.)"
-                return f"{header}\n\n✅ I've saved your details for your request: \"{original_prompt[:300]}\" — I'm ready to answer it fully. (Temporary API limit prevented full synthesis — please retry your request now and I'll include these memories in the answer with all keys iterated.)"
+                    return f"Here's a Python starter for your request: \"{original_prompt[:300]}\"\n\n{template_code}\nTell me your specific logic (e.g., what the code should do) and I'll generate the full implementation immediately. (Temporary API limit — retry will succeed.)"
+                return f"Ready to answer your request: \"{original_prompt[:300]}\" — please retry in a few seconds and I'll provide the full answer with your saved memories included."
 
             if load_memory_results:
-                # Load memory fallback: provide formatted memories plus a synthesized paragraph if original prompt requested it
+                # Load memory fallback: ensure AI response is always generated, not just dump
                 mem_block = ""
+                memories_list: list[str] = []
                 for r in load_memory_results:
+                    if r.get("memories"):
+                        memories_list = r.get("memories") or []
                     if r.get("formatted"):
                         mem_block = r.get("formatted")
                         break
                     elif r.get("memories"):
                         mem_block = "\n".join(f"{i+1}. {m}" for i, m in enumerate(r.get("memories")))
-                if mem_block:
-                    # Try direct synthesis for paragraph requests
-                    if original_prompt and any(kw in original_prompt.lower() for kw in ["paragraph", "write about", "bio", "script", "myself", "my name", "who am i"]):
+                if mem_block and not mem_block.strip().lower().startswith("no saved"):
+                    # Try direct synthesis for ANY original prompt (not just paragraph keywords)
+                    if original_prompt:
                         try:
                             retry_system = system_text or "You are Sahana, a helpful AI assistant."
                             retry_prompt = (
                                 f"User asked: \"{original_prompt}\"\n\n"
                                 f"Loaded memories for {user_name}:\n{mem_block}\n\n"
-                                f"Write the requested paragraph/script/content using the loaded memories naturally. "
-                                f"Include the user's name and bio details where relevant. Be thorough and beautifully formatted."
+                                f"Use the loaded memories to fully answer the user's request. "
+                                f"If they asked for a paragraph/bio/script/myself, write it naturally using the memories (include name, bio details). "
+                                f"If they asked 'what do you know about me' or 'my preferences', list and summarize the memories beautifully. "
+                                f"Be thorough, formatted, and helpful."
                             )
                             retry_body = {
                                 "systemInstruction": {"parts": [{"text": retry_system}]},
@@ -942,7 +980,35 @@ async def _send_function_response(cid: int, model: str, body: dict, function_cal
                                     return retry_text
                         except Exception as e:
                             logger.debug(f"load_memory fallback retry failed: {e}")
-                    return f"🧠 Loaded memories:\n{mem_block}"
+                    # If LLM synthesis failed or no original_prompt, return templated synthesis that still answers
+                    if memories_list:
+                        templated = "🧠 **Your saved memories:**\n" + "\n".join(f"- {m}" for m in memories_list)
+                        templated += "\n\n✨ Here's a summary based on your saved details:\n"
+                        # Create a simple paragraph from memories
+                        templated += ", ".join(memories_list[:5]) + "."
+                        if original_prompt:
+                            templated += f"\n\n*Requested: \"{original_prompt[:200]}\"* — let me know if you'd like this expanded!"
+                        return templated
+                    return f"🧠 Loaded memories:\n{mem_block}\n\nLet me know how you'd like to use this information!"
+                else:
+                    # No memories case: still provide AI response
+                    if original_prompt:
+                        try:
+                            retry_system = system_text or "You are Sahana, a helpful AI assistant."
+                            retry_prompt = f"User asked: \"{original_prompt}\"\n\nNo saved memories found for {user_name}. Provide a helpful, friendly response explaining that and suggesting they can save memories."
+                            retry_body = {
+                                "systemInstruction": {"parts": [{"text": retry_system}]},
+                                "contents": [{"role": "user", "parts": [{"text": retry_prompt}]}],
+                                "generationConfig": {"maxOutputTokens": MAX_OUTPUT_TOKENS, "temperature": await get_user_temp(cid)},
+                            }
+                            retry_data, _ = await try_api_call(model, retry_body)
+                            if retry_data:
+                                retry_text, _ = extract_ai_text(retry_data)
+                                if retry_text and retry_text not in ("No response received from AI.", "Failed to parse AI response."):
+                                    return retry_text
+                        except Exception:
+                            pass
+                    return "🧠 No saved memories found. You can tell me facts like your name, location, or preferences and I'll remember them for next time!"
 
             # Generic fallback: prioritize detailed outputs
             messages = []
@@ -973,7 +1039,7 @@ async def _send_function_response(cid: int, model: str, body: dict, function_cal
     
     more_calls = extract_function_calls(data)
     if more_calls:
-        return await _send_function_response(cid, model, follow_up, more_calls, user_name=user_name, depth=depth+1)
+        return await _send_function_response(cid, model, follow_up, more_calls, user_name=user_name, depth=depth+1, reply_to_message_id=reply_to_message_id)
     
     ai_text, sources = extract_ai_text(data)
     if not ai_text or ai_text in ("No response received from AI.", "Failed to parse AI response."):
@@ -1087,7 +1153,7 @@ async def _process_parts_for_api(parts: list) -> list:
 
 
 
-async def handle_gemini(cid: int, current_parts: list, system_text: str, use_functions: bool = True, user_name: str = "User", **kwargs) -> Optional[str]:
+async def handle_gemini(cid: int, current_parts: list, system_text: str, use_functions: bool = True, user_name: str = "User", reply_to_message_id: Optional[int] = None, **kwargs) -> Optional[str]:
     """Main entry: handle Gemini generateContent with function calling, concurrent execution, and proper memory/web_search support."""
     model = await get_gemini_model(cid)
     history = await get_recent_history(cid, CONTEXT_SIZE)
@@ -1100,7 +1166,7 @@ async def handle_gemini(cid: int, current_parts: list, system_text: str, use_fun
     if not await fetch_api_keys():
         msg = "Could not fetch API keys. Please try again later."
         await save_message(cid, "model", msg)
-        await send_message(cid, msg)
+        await send_message(cid, msg, reply_to_message_id=reply_to_message_id)
         return None
         
     data, err = await try_api_call(model, body)
@@ -1117,23 +1183,23 @@ async def handle_gemini(cid: int, current_parts: list, system_text: str, use_fun
                 elif fname == "generate_image":
                     await send_chat_action(cid, "upload_photo")
                 
-            final_text = await _send_function_response(cid, model, body, function_calls, user_name=user_name)
+            final_text = await _send_function_response(cid, model, body, function_calls, user_name=user_name, reply_to_message_id=reply_to_message_id)
             if final_text:
                 # Extract any sources that may have been embedded by web_search follow-up
                 # final_text may already contain formatted_sources if web_search was used
                 await save_message(cid, "model", final_text)
                 if final_text not in ("No response received from AI.", "Failed to parse AI response."):
-                    await send_message(cid, format_response_with_sources(final_text, []), parse_mode="HTML")
+                    await send_message(cid, format_response_with_sources(final_text, []), parse_mode="HTML", reply_to_message_id=reply_to_message_id)
                 else:
-                    await send_message(cid, final_text)
+                    await send_message(cid, final_text, reply_to_message_id=reply_to_message_id)
                 return final_text
                 
         ai_text, sources = extract_ai_text(data)
         await save_message(cid, "model", ai_text)
         if ai_text not in ("No response received from AI.", "Failed to parse AI response."):
-            await send_message(cid, format_response_with_sources(ai_text, sources), parse_mode="HTML")
+            await send_message(cid, format_response_with_sources(ai_text, sources), parse_mode="HTML", reply_to_message_id=reply_to_message_id)
         else:
-            await send_message(cid, ai_text)
+            await send_message(cid, ai_text, reply_to_message_id=reply_to_message_id)
         return ai_text
         
     # err is already user-friendly from try_api_call
@@ -1149,6 +1215,6 @@ async def handle_gemini(cid: int, current_parts: list, system_text: str, use_fun
     else:
         error_msg = f"❌ {friendly_err}"
     await save_message(cid, "model", error_msg)
-    await send_message(cid, error_msg)
+    await send_message(cid, error_msg, reply_to_message_id=reply_to_message_id)
     return None
 

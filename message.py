@@ -8,17 +8,22 @@ _TELEGRAM_SEMAPHORE = asyncio.Semaphore(50)
 _TELEGRAM_LIMITS = httpx.Limits(max_connections=50, max_keepalive_connections=50)
 
 
-async def send_message(cid: int, text: str, parse_mode: Optional[str] = None, reply_markup: Optional[dict] = None) -> Optional[dict]:
+async def send_message(cid: int, text: str, parse_mode: Optional[str] = None, reply_markup: Optional[dict] = None, reply_to_message_id: Optional[int] = None) -> Optional[dict]:
     chunks = [text[i:i + 4096] for i in range(0, len(text), 4096)]
     result = None
     async with _TELEGRAM_SEMAPHORE:
         async with httpx.AsyncClient(timeout=30.0, limits=_TELEGRAM_LIMITS) as client:
-            for chunk in chunks:
+            for idx, chunk in enumerate(chunks):
                 payload: dict = {"chat_id": cid, "text": chunk}
                 if parse_mode:
                     payload["parse_mode"] = parse_mode
                 if reply_markup:
                     payload["reply_markup"] = reply_markup
+                # Telegram reply support: reply to original group message when Bot is mentioned
+                if reply_to_message_id is not None and idx == 0:
+                    payload["reply_parameters"] = {"message_id": reply_to_message_id}
+                    # Fallback for older API
+                    payload["reply_to_message_id"] = reply_to_message_id
                 resp = await client.post(f"{TELEGRAM_API}/sendMessage", json=payload)
                 result = resp.json()
                 if not result.get("ok") and parse_mode:
