@@ -5,9 +5,10 @@ TELEGRAM_API = f"https://api.telegram.org/bot{BOT_TOKEN}"
 POOL_API = "https://sr-pool-api-5bm.pages.dev"
 
 # Models
-MODEL_SAHANA_1 = "gemini-3.5-flash-lite"
-MODEL_SAHANA_2 = "gemini-3.5-flash"
-MODEL_SAHANA_3 = "gemini-3.6-flash"
+# Gemini model IDs (verified against Google's current model catalogue).
+MODEL_SAHANA_1 = "gemini-2.5-flash"
+MODEL_SAHANA_2 = "gemini-3-flash-preview"
+MODEL_SAHANA_3 = "gemini-3.5-flash"
 DEFAULT_MODEL = "sahana-1"
 
 # Dedicated model for web_search function (strict grounding with google search)
