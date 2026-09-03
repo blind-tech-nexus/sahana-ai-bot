@@ -5,12 +5,10 @@ TELEGRAM_API = f"https://api.telegram.org/bot{BOT_TOKEN}"
 POOL_API = "https://sr-pool-api-5bm.pages.dev"
 
 # Models
-# Use model IDs that are published by the Gemini v1beta API.  The old
-# gemini-3.5/gemini-3.6 IDs were never valid model resource names, so every
-# normal chat request failed with HTTP 404 while bot commands continued to work.
-MODEL_SAHANA_1 = "gemini-2.5-flash-lite"
-MODEL_SAHANA_2 = "gemini-2.5-flash"
-MODEL_SAHANA_3 = "gemini-2.5-pro"
+# Gemini model IDs (verified against Google's current model catalogue).
+MODEL_SAHANA_1 = "gemini-2.5-flash"
+MODEL_SAHANA_2 = "gemini-3-flash-preview"
+MODEL_SAHANA_3 = "gemini-3.5-flash"
 DEFAULT_MODEL = "sahana-1"
 
 # Dedicated model for web_search function (strict grounding with google search)
